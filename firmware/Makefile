@@ -241,6 +241,24 @@ TEMPLATE_PATH := $(SDK_ROOT)/components/toolchain/gcc
 include $(TEMPLATE_PATH)/Makefile.common
 $(foreach target, $(TARGETS), $(call define_target, $(target)))
 
+# ---- TESTBOARD change detection ---------------------------------------------
+# When TESTBOARD changes between builds, force a clean rebuild of all objects.
+# The $(shell) runs during Makefile parsing (before any target recipes), so
+# stale .o files are removed before the build graph is walked — no race with -j.
+TESTBOARD_STAMP := $(OUTPUT_DIRECTORY)/.testboard_stamp
+
+# Only evaluate at top-level (not during clean or help, which may not have _build)
+ifneq ($(MAKECMDGOALS),clean)
+  __tb_stale := $(shell \
+    current=$$(cat $(TESTBOARD_STAMP) 2>/dev/null || echo "none"); \
+    if [ "$$current" != "$(TESTBOARD)" ]; then \
+      echo "  TESTBOARD=$(TESTBOARD) (changed), cleaning objects" >&2; \
+      rm -f $(OUTPUT_DIRECTORY)/nrf52840_xxaa/*.o 2>/dev/null; \
+      mkdir -p $(OUTPUT_DIRECTORY) 2>/dev/null; \
+      echo "$(TESTBOARD)" > $(TESTBOARD_STAMP); \
+    fi)
+endif
+
 # ---- Convenience targets ----------------------------------------------------
 .PHONY: default help dfu flash-dfu flash-sd flash-app
 
@@ -249,11 +267,23 @@ default: $(TARGETS)
 help:
 	@echo "targets: nrf52840_xxaa flash flash_softdevice erase dfu flash-dfu"
 
-dfu:
-	@echo "TODO: DFU packaging not yet wired"
+# Signed USB-DFU package (S340 v7.0.1, hw 52)
+DFU_KEY  ?= ../dfu/dfu_private_key.pem
+DFU_ZIP  := $(OUTPUT_DIRECTORY)/app_dfu.zip
+APP_HEX  := $(OUTPUT_DIRECTORY)/nrf52840_xxaa.hex
+
+dfu: $(APP_HEX)
+	@echo "  Creating DFU package..."
+	nrfutil pkg generate \
+	  --hw-version 52 --sd-req 0xCE \
+	  --application $(APP_HEX) --application-version 1 \
+	  --key-file $(DFU_KEY) \
+	  $(DFU_ZIP)
+	@echo "  DFU package: $(DFU_ZIP)"
 
 flash-dfu:
-	@echo "TODO: DFU flash not yet wired (needs serial)"
+	@test -n "$(SERIAL)" || { echo "ERROR: SERIAL=/dev/cu.usbmodemXXXX required"; exit 1; }
+	nrfutil dfu usb-serial -pkg $(DFU_ZIP) -p $(SERIAL)
 
 flash-sd:
 	@echo "TODO: flash SoftDevice (nrfjprog -f nrf52 --program $(S340_HEX) ...)"
