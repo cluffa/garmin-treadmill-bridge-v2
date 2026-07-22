@@ -107,6 +107,55 @@
 #define NRFX_POWER_DEFAULT_DCDCEN 0
 #define NRFX_POWER_CONFIG_DEFAULT_DCDCENHV 0
 
+/* ---- TWI (I2C) for SSD1306 OLED ------------------------------------------- */
+#define NRFX_TWI_ENABLED 1
+#define NRFX_TWIM_ENABLED 1
+#define TWI_ENABLED 1
+#define TWI0_ENABLED 1
+#define TWI0_USE_EASY_DMA 0
+#define TWI0_CONFIG_FREQUENCY    NRF_TWI_FREQ_400K
+#define TWI0_CONFIG_IRQ_PRIORITY APP_IRQ_PRIORITY_LOWEST
+#define NRFX_TWI_DEFAULT_CONFIG_FREQUENCY     NRF_TWI_FREQ_400K
+#define NRFX_TWI_DEFAULT_CONFIG_IRQ_PRIORITY  APP_IRQ_PRIORITY_LOWEST
+#define NRFX_TWI_DEFAULT_CONFIG_HOLD_BUS_UNINIT 0
+#define NRFX_TWIM_DEFAULT_CONFIG_FREQUENCY     NRF_TWI_FREQ_400K
+#define NRFX_TWIM_DEFAULT_CONFIG_IRQ_PRIORITY  6
+#define NRFX_TWIM_DEFAULT_CONFIG_HOLD_BUS_UNINIT 0
+#define TWI_DEFAULT_CONFIG_FREQUENCY    NRF_TWI_FREQ_400K
+#define TWI_DEFAULT_CONFIG_IRQ_PRIORITY APP_IRQ_PRIORITY_LOWEST
+#define TWI_DEFAULT_CONFIG_CLR_BUS_INIT 0
+#define TWI_DEFAULT_CONFIG_HOLD_BUS_UNINIT 0
+
+/* ---- GPIOTE (already in sdk_config.h; app_button pulls it) ----------------- */
+#define GPIOTE_ENABLED 1
+#define NRFX_GPIOTE_ENABLED 1
+
+/* ---- PWM for passive buzzer ------------------------------------------------ */
+#define NRFX_PWM_ENABLED 1
+#define NRFX_PWM0_ENABLED 1
+#define PWM_ENABLED 1
+#define PWM0_ENABLED 1
+#define APP_PWM_ENABLED 1
+
+/* nrfx_pwm default config — required by NRFX_PWM_DEFAULT_CONFIG macro */
+#define NRFX_PWM_DEFAULT_CONFIG_OUT0_PIN       NRFX_PWM_PIN_NOT_USED
+#define NRFX_PWM_DEFAULT_CONFIG_OUT1_PIN       NRFX_PWM_PIN_NOT_USED
+#define NRFX_PWM_DEFAULT_CONFIG_OUT2_PIN       NRFX_PWM_PIN_NOT_USED
+#define NRFX_PWM_DEFAULT_CONFIG_OUT3_PIN       NRFX_PWM_PIN_NOT_USED
+#define NRFX_PWM_DEFAULT_CONFIG_IRQ_PRIORITY   APP_IRQ_PRIORITY_LOWEST
+#define NRFX_PWM_DEFAULT_CONFIG_BASE_CLOCK     NRF_PWM_CLK_1MHz
+#define NRFX_PWM_DEFAULT_CONFIG_COUNT_MODE     NRF_PWM_MODE_UP
+#define NRFX_PWM_DEFAULT_CONFIG_TOP_VALUE      100
+#define NRFX_PWM_DEFAULT_CONFIG_LOAD_MODE      NRF_PWM_LOAD_COMMON
+#define NRFX_PWM_DEFAULT_CONFIG_STEP_MODE      NRF_PWM_STEP_AUTO
+#define NRFX_PWM0_CONFIG_IRQ_PRIORITY          APP_IRQ_PRIORITY_LOWEST
+
+/* ---- app_button (debounced expansion board button) ------------------------- */
+#define BUTTON_ENABLED 1
+
+/* ---- app_timer (already enabled; app_pwm needs it) ------------------------- */
+#define APP_TIMER_ENABLED 1
+
 /* ---- FDS (needed by nrf_fstorage which is pulled by other modules) -------- */
 #define FDS_ENABLED 1
 #define FDS_VIRTUAL_PAGES 2

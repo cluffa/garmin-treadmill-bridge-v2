@@ -10,6 +10,9 @@
 #         make -j8 GNU_INSTALL_ROOT=... GNU_VERSION=7.2.1 SDK_ROOT=... S340_API=...
 #
 # Task 1.2: USB-CDC ACM console + interactive ctrl dispatch.
+# M2 Task 2.x: expansion-board test aid (TESTBOARD=1 links; =0 compiles to no-ops).
+
+TESTBOARD ?= 1
 
 PROJECT_NAME     := garmin_ant_bridge
 TARGETS          := nrf52840_xxaa
@@ -29,8 +32,18 @@ SRC_FILES += \
   $(FW_DIR)/main.c \
   $(FW_DIR)/usb_cdc_log.c \
   $(FW_DIR)/machine_stubs.c \
+  $(FW_DIR)/app_state.c \
   $(CORE_DIR)/ctrl_dispatch.c \
   $(CORE_DIR)/ctrl_frames.c \
+
+# M2 testboard sources (conditionally linked)
+ifeq ($(TESTBOARD),1)
+SRC_FILES += \
+  $(FW_DIR)/testboard/hw_led.c \
+  $(FW_DIR)/testboard/hw_buzzer.c \
+  $(FW_DIR)/testboard/hw_button.c \
+  $(FW_DIR)/testboard/ssd1306.c
+endif
 
 # ---- SDK: startup + system --------------------------------------------------
 SRC_FILES += \
@@ -93,9 +106,27 @@ SRC_FILES += \
   $(SDK_ROOT)/components/libraries/usbd/app_usbd_serial_num.c \
   $(SDK_ROOT)/components/libraries/usbd/class/cdc/acm/app_usbd_cdc_acm.c \
 
+# ---- SDK: TWI (I2C) driver (for SSD1306 OLED) -------------------------------
+SRC_FILES += \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_twi.c \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_twim.c \
+  $(SDK_ROOT)/integration/nrfx/legacy/nrf_drv_twi.c \
+
+# ---- SDK: GPIOTE + app_button (for expansion board button) -------------------
+SRC_FILES += \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_gpiote.c \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/prs/nrfx_prs.c \
+  $(SDK_ROOT)/components/libraries/button/app_button.c \
+
+# ---- SDK: PWM driver (for passive buzzer) ------------------------------------
+SRC_FILES += \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_pwm.c \
+  $(SDK_ROOT)/components/libraries/pwm/app_pwm.c \
+
 # ---- Include paths ----------------------------------------------------------
 INC_FOLDERS += \
   $(FW_DIR) \
+  $(FW_DIR)/testboard \
   $(CORE_DIR) \
   $(S340_API) \
   $(S340_API)/nrf52 \
@@ -105,6 +136,7 @@ INC_FOLDERS += \
   $(SDK_ROOT)/components/libraries/atomic_fifo \
   $(SDK_ROOT)/components/libraries/atomic_flags \
   $(SDK_ROOT)/components/libraries/balloc \
+  $(SDK_ROOT)/components/libraries/button \
   $(SDK_ROOT)/components/libraries/delay \
   $(SDK_ROOT)/components/libraries/experimental_section_vars \
   $(SDK_ROOT)/components/libraries/fds \
@@ -113,6 +145,7 @@ INC_FOLDERS += \
   $(SDK_ROOT)/components/libraries/log/src \
   $(SDK_ROOT)/components/libraries/memobj \
   $(SDK_ROOT)/components/libraries/mutex \
+  $(SDK_ROOT)/components/libraries/pwm \
   $(SDK_ROOT)/components/libraries/pwr_mgmt \
   $(SDK_ROOT)/components/libraries/queue \
   $(SDK_ROOT)/components/libraries/ringbuf \
@@ -153,6 +186,7 @@ CFLAGS += -DSOFTDEVICE_PRESENT
 CFLAGS += -DNRF_SD_BLE_API_VERSION=7
 CFLAGS += -DUSE_APP_CONFIG
 CFLAGS += -DAPP_TIMER_V2 -DAPP_TIMER_V2_RTC1_ENABLED
+CFLAGS += -DTESTBOARD=$(TESTBOARD)
 # ANT SoftDevice evaluation license key (nrf_sdm.h) — personal use only; a
 # commercial release requires a license from thisisant.com.
 CFLAGS += -DANT_LICENSE_KEY='"3831-521d-7df9-24d8-eff3-467b-225f-a00e"'
@@ -164,6 +198,7 @@ ASMFLAGS += -DBOARD_CUSTOM -DCONFIG_GPIO_AS_PINRESET -DFLOAT_ABI_HARD
 ASMFLAGS += -DNRF52840_XXAA -DS340 -DSOFTDEVICE_PRESENT
 ASMFLAGS += -DNRF_SD_BLE_API_VERSION=7 -DUSE_APP_CONFIG
 ASMFLAGS += -DAPP_TIMER_V2 -DAPP_TIMER_V2_RTC1_ENABLED
+ASMFLAGS += -DTESTBOARD=$(TESTBOARD)
 
 # ---- Linker flags -----------------------------------------------------------
 LDFLAGS += -O3 -g3
