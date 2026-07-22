@@ -14,12 +14,26 @@
 #define NRF_SDH_ANT_ENABLED 0
 #define NRF_SDH_SOC_ENABLED 1
 
-/* BLE peripheral-only for now (watch ctrl service, 1 link). */
+/* BLE peripheral + central: watch ctrl service (1 link) + treadmill (1 link). */
 #define NRF_SDH_BLE_PERIPHERAL_LINK_COUNT 1
-#define NRF_SDH_BLE_CENTRAL_LINK_COUNT 0
-#define NRF_SDH_BLE_TOTAL_LINK_COUNT 1
-#define NRF_SDH_BLE_VS_UUID_COUNT 1        /* one vendor-specific base UUID */
+#define NRF_SDH_BLE_CENTRAL_LINK_COUNT 1
+#define NRF_SDH_BLE_TOTAL_LINK_COUNT 2
+#define NRF_SDH_BLE_VS_UUID_COUNT 2        /* ctrl-svc base + iFit vendor base */
 #define NRF_SDH_BLE_GATT_MAX_MTU_SIZE 23    /* CIQ default MTU */
+
+/* BLE central: scanning module */
+#define NRF_BLE_SCAN_ENABLED 1
+#define NRF_BLE_SCAN_BUFFER 255
+#define NRF_BLE_SCAN_FILTER_ENABLE 0         /* we classify in SW */
+#define NRF_BLE_SCAN_CONNECTION_ENABLE 0     /* connect_policy owns connects */
+#define NRF_BLE_SCAN_NAME_CNT 0
+#define NRF_BLE_SCAN_SHORT_NAME_CNT 0
+#define NRF_BLE_SCAN_ADDRESS_CNT 0
+#define NRF_BLE_SCAN_UUID_CNT 0
+#define NRF_BLE_SCAN_APPEARANCE_CNT 0
+
+/* Peer Manager: enable central features for bond support */
+#define PM_CENTRAL_ENABLED 1
 
 /* ---- clock: XIAO has a 32.768 kHz crystal -------------------------------- */
 #define NRF_SDH_CLOCK_LF_SRC 1        /* XTAL */

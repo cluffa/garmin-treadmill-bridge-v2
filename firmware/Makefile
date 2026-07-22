@@ -31,12 +31,18 @@ $(OUTPUT_DIRECTORY)/nrf52840_xxaa.out: LINKER_SCRIPT := xiao_nrf52840_s340.ld
 SRC_FILES += \
   $(FW_DIR)/main.c \
   $(FW_DIR)/usb_cdc_log.c \
-  $(FW_DIR)/machine_stubs.c \
   $(FW_DIR)/app_state.c \
   $(FW_DIR)/ble_ctrl_svc.c \
+  $(FW_DIR)/ble_central.c \
+  $(FW_DIR)/last_device.c \
   $(CORE_DIR)/ctrl_dispatch.c \
   $(CORE_DIR)/ctrl_frames.c \
   $(CORE_DIR)/workout_ctrl.c \
+  $(CORE_DIR)/ftms_parse.c \
+  $(CORE_DIR)/ifit_parse.c \
+  $(CORE_DIR)/ifit_fsm.c \
+  $(CORE_DIR)/ftms_devlist.c \
+  $(CORE_DIR)/connect_policy.c \
 
 # M2 testboard sources (conditionally linked)
 ifeq ($(TESTBOARD),1)
@@ -63,6 +69,10 @@ SRC_FILES += \
 SRC_FILES += \
   $(SDK_ROOT)/components/ble/common/ble_advdata.c \
   $(SDK_ROOT)/components/ble/common/ble_srv_common.c \
+
+# ---- SDK: BLE scanning module (nrf_ble_scan) --------------------------------
+SRC_FILES += \
+  $(SDK_ROOT)/components/ble/nrf_ble_scan/nrf_ble_scan.c \
 
 # ---- SDK: logging (RTT backend) ---------------------------------------------
 SRC_FILES += \
@@ -141,6 +151,7 @@ INC_FOLDERS += \
   $(S340_API)/nrf52 \
   $(SDK_ROOT)/components \
   $(SDK_ROOT)/components/ble/common \
+  $(SDK_ROOT)/components/ble/nrf_ble_scan \
   $(SDK_ROOT)/components/boards \
   $(SDK_ROOT)/components/libraries/atomic \
   $(SDK_ROOT)/components/libraries/atomic_fifo \

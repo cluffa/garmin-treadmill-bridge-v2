@@ -26,6 +26,9 @@
 #include "nrf_sdh_ble.h"
 
 #include "app_state.h"
+#include "ble_central.h"
+#include "ftms_devlist.h"
+#include "machine.h"
 #include "usb_cdc_log.h"
 
 #if TESTBOARD
@@ -94,13 +97,17 @@ int main(void)
 
     NRF_LOG_INFO("xiao-nrf52840 up, S340 present");
 
+    /* Shared device state (used by radios + testboard) */
+    app_state_init();
+
     /* Watch-facing BLE peripheral: control service + advertising */
     ble_ctrl_svc_init();
     ble_ctrl_svc_advertise_start();
     NRF_LOG_INFO("ctrl_svc: initialized and advertising");
 
-    /* Shared device state (used by radios + testboard) */
-    app_state_init();
+    /* Treadmill-facing BLE central: scanning, connect, data, control writes */
+    ble_central_init();
+    NRF_LOG_INFO("ble_central: initialized");
 
     /* USB-CDC ACM: log console + interactive ctrl command dispatch */
     usb_cdc_log_init();
@@ -120,4 +127,36 @@ int main(void)
             nrf_pwr_mgmt_run();
         }
     }
+}
+
+/*
+ * Override the TESTBOARD weak stubs with real radio actions (M3).
+ * When TESTBOARD=1, the button short-press action cycler calls these.
+ */
+
+void testboard_action_scan(void)
+{
+    NRF_LOG_INFO("testboard: SCAN (live)");
+    ble_central_scan_start();
+}
+
+void testboard_action_connect_next(void)
+{
+    static int s_next_idx;
+    ftms_device_t devs[FTMS_MAX_DEVICES];
+    int n = machine_get_devices(devs, FTMS_MAX_DEVICES);
+    if (n == 0) {
+        NRF_LOG_INFO("testboard: CONNECT-NEXT — no devices in list");
+        return;
+    }
+    int idx = s_next_idx % n;
+    s_next_idx++;
+    NRF_LOG_INFO("testboard: CONNECT-NEXT idx %d", idx);
+    ble_central_connect(idx);
+}
+
+void testboard_action_stop(void)
+{
+    NRF_LOG_INFO("testboard: STOP (live)");
+    machine_stop();
 }
