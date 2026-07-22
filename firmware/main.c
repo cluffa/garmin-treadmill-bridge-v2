@@ -32,6 +32,7 @@
 #include "ftms_devlist.h"
 #include "machine.h"
 #include "usb_cdc_log.h"
+#include "workout_ctrl.h"
 
 #if TESTBOARD
 #include "testboard/testboard.h"
@@ -49,6 +50,24 @@ static void heartbeat_cb(void *ctx)
     unsigned int n = (unsigned int)s_heartbeat_cnt++;
 
     NRF_LOG_INFO("alive %u", n);
+
+    /* ~1 Hz control keepalive: re-assert the resolved target speed if a write
+     * to the treadmill was lost. The watch only sends the workout frame on
+     * change, so without this a dropped command (BLE noise, S340 timeslot
+     * jitter, an iFit write outside its poll slot) would never self-heal —
+     * the belt would sit at the wrong speed. This is the core of the
+     * device-is-the-brain policy; workout_ctrl_tick() is a no-op until a
+     * frame has latched a target. */
+    workout_ctrl_tick();
+
+    /* Push the treadmill link state to a subscribed watch on change so the
+     * picker updates without polling for STATUS. */
+    static bool s_last_link;
+    bool link = machine_connected();
+    if (link != s_last_link) {
+        s_last_link = link;
+        ble_ctrl_svc_notify_status();
+    }
 
     /* Also route the heartbeat to USB-CDC so the console shows signs of
      * life with no J-Link / RTT viewer attached. */

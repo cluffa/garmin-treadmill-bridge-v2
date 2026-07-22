@@ -126,6 +126,12 @@ static void send_status_frame(void)
     txq_push(buf, (uint8_t)n);
 }
 
+/* Public wrapper so main.c's heartbeat can push status on link change. */
+void ble_ctrl_svc_notify_status(void)
+{
+    send_status_frame();
+}
+
 static void send_list_frames(void)
 {
     ftms_device_t devs[FTMS_MAX_DEVICES];

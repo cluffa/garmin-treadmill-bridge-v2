@@ -102,11 +102,15 @@ void last_device_save(const ftms_device_t *d)
     };
 
     ret_code_t err;
-    if (have) {
-        fds_record_desc_t desc;
-        fds_find_token_t  tok;
-        memset(&tok, 0, sizeof tok);
-        (void)fds_record_find(LAST_FILE_ID, LAST_REC_KEY, &desc, &tok);
+    fds_record_desc_t desc;
+    fds_find_token_t  tok;
+    memset(&tok, 0, sizeof tok);
+
+    /* Only update in place if the record is actually found — otherwise `desc`
+     * is uninitialized and fds_record_update() would corrupt flush state.
+     * `have` reflects a prior load, but the descriptor must come from a fresh
+     * find, so re-find and fall back to write if it's gone. */
+    if (fds_record_find(LAST_FILE_ID, LAST_REC_KEY, &desc, &tok) == NRF_SUCCESS) {
         err = fds_record_update(&desc, &rec);
     } else {
         err = fds_record_write(NULL, &rec);

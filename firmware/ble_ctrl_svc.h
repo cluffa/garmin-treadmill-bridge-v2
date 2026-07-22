@@ -22,6 +22,11 @@ void ble_ctrl_svc_init(void);
 void ble_ctrl_svc_advertise_start(void);
 void ble_ctrl_svc_notify(const uint8_t *frame, uint16_t len);
 
+/* Push the current treadmill-link status frame to a subscribed watch.
+ * Called from the heartbeat on link state change so the picker updates
+ * without polling STATUS. No-op when nothing is subscribed. */
+void ble_ctrl_svc_notify_status(void);
+
 #ifdef __cplusplus
 }
 #endif

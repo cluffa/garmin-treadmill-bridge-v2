@@ -312,5 +312,5 @@
 - Spec "emulate watch + treadmill" → `mock_watch.py` (3.1), `mock_treadmill.py` (3.2).
 - Spec "Renode bounded, non-radio" → Task 1.3 with honest limitations doc.
 - Spec "USB-DFU + USB-CDC, no probe" → Tasks 1.2 (CDC), 4.1 (DFU).
-- Spec "concurrency make-or-break gate" → Task 4.2 (real HW).
+- Spec "concurrency make-or-break gate" → Task 4.2 (test-log template committed; pending HW validation — NOT yet run on hardware).
 - Spec "host tests green gate" → M0 exit gate.

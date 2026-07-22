@@ -212,8 +212,16 @@ CFLAGS += -DUSE_APP_CONFIG
 CFLAGS += -DAPP_TIMER_V2 -DAPP_TIMER_V2_RTC1_ENABLED
 CFLAGS += -DTESTBOARD=$(TESTBOARD)
 # ANT SoftDevice evaluation license key (nrf_sdm.h) — personal use only; a
-# commercial release requires a license from thisisant.com.
-CFLAGS += -DANT_LICENSE_KEY='"3831-521d-7df9-24d8-eff3-467b-225f-a00e"'
+# commercial release requires a license from thisisant.com. The key is tied to
+# a developer account, so it lives in the git-ignored ant_license.mk (copy
+# ant_license.mk.example and paste your own). Without it, ANT_LICENSE_KEY is
+# empty and sd_ant_enable() will fail at runtime.
+-include ant_license.mk
+ifneq ($(ANT_LICENSE_KEY),)
+CFLAGS += -DANT_LICENSE_KEY='"$(ANT_LICENSE_KEY)"'
+else
+$(warning ant_license.mk not found or ANT_LICENSE_KEY empty — ANT will not enable at runtime. Copy ant_license.mk.example.)
+endif
 
 # ---- Assembler flags --------------------------------------------------------
 ASMFLAGS += -g3 -mcpu=cortex-m4 -mthumb -mabi=aapcs

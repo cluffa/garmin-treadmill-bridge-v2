@@ -1,6 +1,8 @@
 # nRF5 SDK build artifacts + secret ANT+ network key (see ant_network_key.h.example)
 _build/
 firmware/ant_network_key.h
+# ANT SoftDevice license key — per-developer, personal-use (see ant_license.mk.example)
+firmware/ant_license.mk
 test/host/test_*
 !test/host/test_*.c
 

@@ -744,6 +744,12 @@ void ble_central_scan_start(void)
     s_scan_start_ticks = app_timer_cnt_get();
     uint32_t err = nrf_ble_scan_start(&m_scan);
     if (err != NRF_SUCCESS) {
+        /* KNOWN BRING-UP LIMITATION: a failed scan start is logged and left —
+         * there is no automatic retry/backoff. In practice a failure here means
+         * the radio is busy (a connect is mid-flight, guarded above) or the
+         * SoftDevice is out of resources; the watch re-issues SCAN from the
+         * picker. Auto-recovery (retry timer) is deferred to a HW bring-up
+         * pass once real failure modes are observed. */
         NRF_LOG_WARNING("central: scan start err 0x%x", (unsigned int)err);
         s_scanning = false;
         update_link_state();
@@ -909,6 +915,11 @@ bool machine_connecting(void)
 
 int8_t machine_conn_rssi(void)
 {
+    /* KNOWN BRING-UP LIMITATION: s_conn_rssi is only ever the initial 0 — the
+     * connected-link RSSI is not sampled yet. Populating it needs a periodic
+     * sd_ble_gap_rssi_get() (after sd_ble_gap_rssi_start() on connect). The
+     * watch reads pace over ANT+, not this field, so live RSSI is a
+     * nice-to-have for the OLED only; deferred to a hardware bring-up pass. */
     return s_conn_rssi;
 }
 

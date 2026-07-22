@@ -1,0 +1,11 @@
+# ant_license.mk.example — template for the ANT SoftDevice license key.
+#
+# Copy this file to ant_license.mk (git-ignored) and paste your own ANT
+# evaluation/commercial license key from https://www.thisisant.com. The key is
+# issued per-developer account and is personal-use only, so the real value is
+# kept out of version control. The Makefile -includes ant_license.mk and passes
+# ANT_LICENSE_KEY through to nrf_sdm.h as -DANT_LICENSE_KEY.
+#
+# Without a valid key the S340 SoftDevice refuses to enable ANT — the build
+# still links, but sd_ant_enable() returns an error at runtime.
+ANT_LICENSE_KEY := 0000-0000-0000-0000-0000-0000-0000-0000
