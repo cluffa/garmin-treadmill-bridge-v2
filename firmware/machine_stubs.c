@@ -6,10 +6,15 @@
  * or "no devices" so the USB console can respond to STATUS/LIST etc. with
  * sensible defaults rather than linker errors.
  *
+ * When TESTBOARD=1, machine_set_speed() / machine_stop() forward the resolved
+ * target to app_state()->resolved_target_mps so the OLED renders the output
+ * of workout_ctrl (critical for M2's "brain observable with no radios" gate).
+ *
  * Replace this file with the real ble_central.c + machine glue in Milestone M3.
  */
 
 #include "machine.h"
+#include "app_state.h"
 #include <string.h>
 
 /* ---- Stubs ---------------------------------------------------------------- */
@@ -49,7 +54,9 @@ void machine_set_link_cb(void (*cb)(bool connected)) { (void)cb; }
 
 bool machine_set_speed(float kmh)
 {
-    (void)kmh;
+    /* Store the resolved target so the testboard OLED (and later, other
+     * modules) can read back what workout_ctrl commanded. */
+    app_state()->resolved_target_mps = kmh / 3.6f;
     return false;
 }
 
@@ -59,4 +66,8 @@ bool machine_set_incline(float pct)
     return false;
 }
 
-bool machine_stop(void) { return false; }
+bool machine_stop(void)
+{
+    app_state()->resolved_target_mps = 0.0f;
+    return false;
+}

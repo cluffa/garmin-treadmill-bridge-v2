@@ -1,9 +1,12 @@
 /*
  * main.c — XIAO nRF52840 treadmill bridge, firmware bring-up.
  *
- * This stage (Task 1.2): SoftDevice up (S340), app_timer, NRF_LOG over RTT,
- * USB-CDC ACM console + interactive ctrl dispatch, nrf_pwr_mgmt, idle loop
- * logging a heartbeat over both RTT and CDC. No BLE/ANT/testboard yet.
+ * SoftDevice up (S340), app_timer, NRF_LOG over RTT, USB-CDC ACM console
+ * + interactive ctrl dispatch, nrf_pwr_mgmt, idle heartbeat.
+ *
+ * When TESTBOARD=1 the expansion-board test aid (OLED, LED, buzzer, button)
+ * is initialised and a ~5 Hz render tick drives the display. No radios yet
+ * (M3 adds BLE central / ctrl svc / ANT).
  */
 
 #include <stdint.h>
@@ -21,6 +24,11 @@
 #include "nrf_sdh.h"
 
 #include "usb_cdc_log.h"
+
+#if TESTBOARD
+#include "app_state.h"
+#include "testboard/testboard.h"
+#endif
 
 #define HEARTBEAT_MS 1000
 
@@ -77,6 +85,13 @@ int main(void)
     /* USB-CDC ACM: log console + interactive ctrl command dispatch */
     usb_cdc_log_init();
     NRF_LOG_INFO("USB-CDC initialized");
+
+#if TESTBOARD
+    /* Expansion-board test aid: OLED, LED, buzzer, button — optional (M2). */
+    app_state_init();
+    testboard_init();
+    NRF_LOG_INFO("testboard initialized (OLED + LED + buzzer + button)");
+#endif
 
     for (;;) {
         /* Pump USBD events (CDC ACM RX/TX callbacks fire here) */

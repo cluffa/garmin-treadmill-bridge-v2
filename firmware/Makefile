@@ -35,6 +35,7 @@ SRC_FILES += \
   $(FW_DIR)/app_state.c \
   $(CORE_DIR)/ctrl_dispatch.c \
   $(CORE_DIR)/ctrl_frames.c \
+  $(CORE_DIR)/workout_ctrl.c \
 
 # M2 testboard sources (conditionally linked)
 ifeq ($(TESTBOARD),1)
@@ -42,7 +43,8 @@ SRC_FILES += \
   $(FW_DIR)/testboard/hw_led.c \
   $(FW_DIR)/testboard/hw_buzzer.c \
   $(FW_DIR)/testboard/hw_button.c \
-  $(FW_DIR)/testboard/ssd1306.c
+  $(FW_DIR)/testboard/ssd1306.c \
+  $(FW_DIR)/testboard/testboard.c
 endif
 
 # ---- SDK: startup + system --------------------------------------------------
