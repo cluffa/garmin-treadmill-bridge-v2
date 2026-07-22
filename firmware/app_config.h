@@ -8,10 +8,10 @@
  * nrf_pwr_mgmt, idle heartbeat. No BLE/ANT/testboard yet.
  */
 
-/* ---- SoftDevice handler: BLE peripheral enabled (ANT/central later) --------- */
+/* ---- SoftDevice handler: BLE + ANT both enabled under S340 ----------------- */
 #define NRF_SDH_ENABLED 1
 #define NRF_SDH_BLE_ENABLED 1
-#define NRF_SDH_ANT_ENABLED 0
+#define NRF_SDH_ANT_ENABLED 1
 #define NRF_SDH_SOC_ENABLED 1
 
 /* BLE peripheral + central: watch ctrl service (1 link) + treadmill (1 link). */
@@ -34,6 +34,14 @@
 
 /* Peer Manager: enable central features for bond support */
 #define PM_CENTRAL_ENABLED 1
+
+/* ---- ANT stack configuration (S340 SoftDevice) ------------------------------- */
+#define NRF_SDH_ANT_TOTAL_CHANNELS_ALLOCATED 1   /* SDM master channel */
+#define NRF_SDH_ANT_ENCRYPTED_CHANNELS 0          /* no encrypted channels */
+#define NRF_SDH_ANT_BURST_QUEUE_SIZE 128
+#define NRF_SDH_ANT_EVENT_QUEUE_SIZE 32
+#define NRF_SDH_ANT_OBSERVER_PRIO_LEVELS 2
+#define NRF_SDH_ANT_STACK_OBSERVER_PRIO 0
 
 /* ---- clock: XIAO has a 32.768 kHz crystal -------------------------------- */
 #define NRF_SDH_CLOCK_LF_SRC 1        /* XTAL */

@@ -301,10 +301,112 @@
 #define ANT_KEY_MANAGER_ENABLED 1
 #endif
 
-// </h> 
+// </h>
 //==========================================================
 
-// <h> nRF_BLE 
+// <h> nRF_SDH_ANT
+
+//==========================================================
+// <e> NRF_SDH_ANT_ENABLED - nrf_sdh_ant - SoftDevice ANT event handler
+//==========================================================
+#ifndef NRF_SDH_ANT_ENABLED
+#define NRF_SDH_ANT_ENABLED 1
+#endif
+// <o> NRF_SDH_ANT_TOTAL_CHANNELS_ALLOCATED - Allocated ANT channels.
+#ifndef NRF_SDH_ANT_TOTAL_CHANNELS_ALLOCATED
+#define NRF_SDH_ANT_TOTAL_CHANNELS_ALLOCATED 1
+#endif
+
+// <o> NRF_SDH_ANT_ENCRYPTED_CHANNELS - Encrypted ANT channels.
+#ifndef NRF_SDH_ANT_ENCRYPTED_CHANNELS
+#define NRF_SDH_ANT_ENCRYPTED_CHANNELS 0
+#endif
+
+// <o> NRF_SDH_ANT_EVENT_QUEUE_SIZE - Event queue size.
+#ifndef NRF_SDH_ANT_EVENT_QUEUE_SIZE
+#define NRF_SDH_ANT_EVENT_QUEUE_SIZE 32
+#endif
+
+// <o> NRF_SDH_ANT_BURST_QUEUE_SIZE - ANT burst queue size.
+#ifndef NRF_SDH_ANT_BURST_QUEUE_SIZE
+#define NRF_SDH_ANT_BURST_QUEUE_SIZE 128
+#endif
+
+// <o> NRF_SDH_ANT_OBSERVER_PRIO_LEVELS - Total number of priority levels for ANT observers.
+// <i> This setting must be equal to the number of different priorities for ANT observers.
+#ifndef NRF_SDH_ANT_OBSERVER_PRIO_LEVELS
+#define NRF_SDH_ANT_OBSERVER_PRIO_LEVELS 2
+#endif
+
+// <o> NRF_SDH_ANT_STACK_OBSERVER_PRIO
+// <i> This setting configures the priority with which ANT events are retrieved.
+#ifndef NRF_SDH_ANT_STACK_OBSERVER_PRIO
+#define NRF_SDH_ANT_STACK_OBSERVER_PRIO 0
+#endif
+
+// <h> Logging
+
+//==========================================================
+// <e> NRF_SDH_ANT_LOG_ENABLED - Enable logging in SoftDevice handler (ANT) module.
+//==========================================================
+#ifndef NRF_SDH_ANT_LOG_ENABLED
+#define NRF_SDH_ANT_LOG_ENABLED 1
+#endif
+// <o> NRF_SDH_ANT_LOG_LEVEL  - Default Severity level
+
+// <0=> Off
+// <1=> Error
+// <2=> Warning
+// <3=> Info
+// <4=> Debug
+
+#ifndef NRF_SDH_ANT_LOG_LEVEL
+#define NRF_SDH_ANT_LOG_LEVEL 3
+#endif
+
+// <o> NRF_SDH_ANT_INFO_COLOR  - ANSI escape code prefix.
+
+// <0=> Default
+// <1=> Black
+// <2=> Red
+// <3=> Green
+// <4=> Yellow
+// <5=> Blue
+// <6=> Magenta
+// <7=> Cyan
+// <8=> White
+
+#ifndef NRF_SDH_ANT_INFO_COLOR
+#define NRF_SDH_ANT_INFO_COLOR 0
+#endif
+
+// <o> NRF_SDH_ANT_DEBUG_COLOR  - ANSI escape code prefix.
+
+// <0=> Default
+// <1=> Black
+// <2=> Red
+// <3=> Green
+// <4=> Yellow
+// <5=> Blue
+// <6=> Magenta
+// <7=> Cyan
+// <8=> White
+
+#ifndef NRF_SDH_ANT_DEBUG_COLOR
+#define NRF_SDH_ANT_DEBUG_COLOR 0
+#endif
+
+// </e>
+
+// </h>
+//==========================================================
+
+// </e>
+
+// </h>
+//==========================================================
+
+// <h> nRF_BLE
 
 //==========================================================
 // <q> BLE_ADVERTISING_ENABLED  - ble_advertising - Advertising module

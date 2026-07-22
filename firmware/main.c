@@ -23,8 +23,10 @@
 #include "nrf_log_default_backends.h"
 #include "nrf_pwr_mgmt.h"
 #include "nrf_sdh.h"
+#include "nrf_sdh_ant.h"
 #include "nrf_sdh_ble.h"
 
+#include "ant_sdm.h"
 #include "app_state.h"
 #include "ble_central.h"
 #include "ftms_devlist.h"
@@ -76,6 +78,12 @@ static void ble_stack_init(void)
     NRF_LOG_INFO("BLE stack enabled");
 }
 
+static void ant_stack_init(void)
+{
+    APP_ERROR_CHECK(nrf_sdh_ant_enable());
+    NRF_LOG_INFO("ANT stack enabled");
+}
+
 static void timers_init(void)
 {
     APP_ERROR_CHECK(nrf_drv_clock_init());
@@ -93,6 +101,7 @@ int main(void)
     timers_init();
     softdevice_init();
     ble_stack_init();
+    ant_stack_init();
     APP_ERROR_CHECK(nrf_pwr_mgmt_init());
 
     NRF_LOG_INFO("xiao-nrf52840 up, S340 present");
@@ -108,6 +117,11 @@ int main(void)
     /* Treadmill-facing BLE central: scanning, connect, data, control writes */
     ble_central_init();
     NRF_LOG_INFO("ble_central: initialized");
+
+    /* ANT+ SDM master: footpod broadcast (watch reads speed natively) */
+    ant_sdm_init();
+    ant_sdm_start();
+    NRF_LOG_INFO("ant_sdm: initialized and broadcasting");
 
     /* USB-CDC ACM: log console + interactive ctrl command dispatch */
     usb_cdc_log_init();

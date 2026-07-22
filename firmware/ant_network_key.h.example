@@ -1,0 +1,14 @@
+#pragma once
+/*
+ * ANT+ network key — REQUIRED to open the ANT+ SDM channel.
+ *
+ * The key is licensed (free for personal use) and must NOT be committed.
+ * 1. Register at https://www.thisisant.com and accept the ANT+ adopter terms.
+ * 2. Copy this file to ant_network_key.h (git-ignored).
+ * 3. Replace the zeros below with the 8-byte ANT+ network key.
+ */
+
+#include <stdint.h>
+
+static const uint8_t ANT_PLUS_NETWORK_KEY[8] =
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};

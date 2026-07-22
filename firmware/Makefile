@@ -32,6 +32,7 @@ SRC_FILES += \
   $(FW_DIR)/main.c \
   $(FW_DIR)/usb_cdc_log.c \
   $(FW_DIR)/app_state.c \
+  $(FW_DIR)/ant_sdm.c \
   $(FW_DIR)/ble_ctrl_svc.c \
   $(FW_DIR)/ble_central.c \
   $(FW_DIR)/last_device.c \
@@ -43,6 +44,7 @@ SRC_FILES += \
   $(CORE_DIR)/ifit_fsm.c \
   $(CORE_DIR)/ftms_devlist.c \
   $(CORE_DIR)/connect_policy.c \
+  $(CORE_DIR)/ant_sdm_encode.c \
 
 # M2 testboard sources (conditionally linked)
 ifeq ($(TESTBOARD),1)
@@ -63,6 +65,7 @@ SRC_FILES += \
 SRC_FILES += \
   $(SDK_ROOT)/components/softdevice/common/nrf_sdh.c \
   $(SDK_ROOT)/components/softdevice/common/nrf_sdh_soc.c \
+  $(SDK_ROOT)/components/softdevice/common/nrf_sdh_ant.c \
   $(SDK_ROOT)/components/softdevice/common/nrf_sdh_ble.c \
 
 # ---- SDK: BLE common libraries ----------------------------------------------
