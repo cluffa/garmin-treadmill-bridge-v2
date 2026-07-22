@@ -4,7 +4,7 @@
 .PHONY: host-test firmware dfu flash-dfu flash-sd flash-app clean
 
 host-test:
-	@echo "TODO: make -C test/host"
+	$(MAKE) -C test/host
 
 firmware:
 	@echo "TODO: make -C firmware"
@@ -22,4 +22,5 @@ flash-app:
 	@echo "TODO: make -C firmware flash-app"
 
 clean:
-	@echo "TODO: make -C test/host clean; make -C firmware clean"
+	$(MAKE) -C test/host clean
+	@echo "TODO: make -C firmware clean"
