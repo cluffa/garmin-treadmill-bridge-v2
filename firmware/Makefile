@@ -33,6 +33,7 @@ SRC_FILES += \
   $(FW_DIR)/usb_cdc_log.c \
   $(FW_DIR)/machine_stubs.c \
   $(FW_DIR)/app_state.c \
+  $(FW_DIR)/ble_ctrl_svc.c \
   $(CORE_DIR)/ctrl_dispatch.c \
   $(CORE_DIR)/ctrl_frames.c \
   $(CORE_DIR)/workout_ctrl.c \
@@ -56,6 +57,12 @@ SRC_FILES += \
 SRC_FILES += \
   $(SDK_ROOT)/components/softdevice/common/nrf_sdh.c \
   $(SDK_ROOT)/components/softdevice/common/nrf_sdh_soc.c \
+  $(SDK_ROOT)/components/softdevice/common/nrf_sdh_ble.c \
+
+# ---- SDK: BLE common libraries ----------------------------------------------
+SRC_FILES += \
+  $(SDK_ROOT)/components/ble/common/ble_advdata.c \
+  $(SDK_ROOT)/components/ble/common/ble_srv_common.c \
 
 # ---- SDK: logging (RTT backend) ---------------------------------------------
 SRC_FILES += \
@@ -133,6 +140,7 @@ INC_FOLDERS += \
   $(S340_API) \
   $(S340_API)/nrf52 \
   $(SDK_ROOT)/components \
+  $(SDK_ROOT)/components/ble/common \
   $(SDK_ROOT)/components/boards \
   $(SDK_ROOT)/components/libraries/atomic \
   $(SDK_ROOT)/components/libraries/atomic_fifo \

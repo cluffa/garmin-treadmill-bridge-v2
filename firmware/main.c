@@ -5,8 +5,8 @@
  * + interactive ctrl dispatch, nrf_pwr_mgmt, idle heartbeat.
  *
  * When TESTBOARD=1 the expansion-board test aid (OLED, LED, buzzer, button)
- * is initialised and a ~5 Hz render tick drives the display. No radios yet
- * (M3 adds BLE central / ctrl svc / ANT).
+ * is initialised and a ~5 Hz render tick drives the display. M3 Task 3.1 adds
+ * the BLE peripheral ctrl-svc (watch facing); central + ANT come later.
  */
 
 #include <stdint.h>
@@ -15,6 +15,7 @@
 #include "app_error.h"
 #include "app_timer.h"
 #include "app_usbd.h"
+#include "ble_ctrl_svc.h"
 #include "boards.h"
 #include "nrf_drv_clock.h"
 #include "nrf_log.h"
@@ -22,11 +23,12 @@
 #include "nrf_log_default_backends.h"
 #include "nrf_pwr_mgmt.h"
 #include "nrf_sdh.h"
+#include "nrf_sdh_ble.h"
 
+#include "app_state.h"
 #include "usb_cdc_log.h"
 
 #if TESTBOARD
-#include "app_state.h"
 #include "testboard/testboard.h"
 #endif
 
@@ -62,6 +64,15 @@ static void softdevice_init(void)
     ASSERT(nrf_sdh_is_enabled());
 }
 
+static void ble_stack_init(void)
+{
+    uint32_t ram_start = 0;
+    APP_ERROR_CHECK(nrf_sdh_ble_default_cfg_set(1 /* conn_cfg_tag */,
+                                                &ram_start));
+    APP_ERROR_CHECK(nrf_sdh_ble_enable(&ram_start));
+    NRF_LOG_INFO("BLE stack enabled");
+}
+
 static void timers_init(void)
 {
     APP_ERROR_CHECK(nrf_drv_clock_init());
@@ -78,9 +89,18 @@ int main(void)
     log_init();
     timers_init();
     softdevice_init();
+    ble_stack_init();
     APP_ERROR_CHECK(nrf_pwr_mgmt_init());
 
     NRF_LOG_INFO("xiao-nrf52840 up, S340 present");
+
+    /* Watch-facing BLE peripheral: control service + advertising */
+    ble_ctrl_svc_init();
+    ble_ctrl_svc_advertise_start();
+    NRF_LOG_INFO("ctrl_svc: initialized and advertising");
+
+    /* Shared device state (used by radios + testboard) */
+    app_state_init();
 
     /* USB-CDC ACM: log console + interactive ctrl command dispatch */
     usb_cdc_log_init();
@@ -88,7 +108,6 @@ int main(void)
 
 #if TESTBOARD
     /* Expansion-board test aid: OLED, LED, buzzer, button — optional (M2). */
-    app_state_init();
     testboard_init();
     NRF_LOG_INFO("testboard initialized (OLED + LED + buzzer + button)");
 #endif

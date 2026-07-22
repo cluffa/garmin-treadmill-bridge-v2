@@ -8,11 +8,18 @@
  * nrf_pwr_mgmt, idle heartbeat. No BLE/ANT/testboard yet.
  */
 
-/* ---- SoftDevice handler: enabled (BLE + ANT disabled for now) --------------- */
+/* ---- SoftDevice handler: BLE peripheral enabled (ANT/central later) --------- */
 #define NRF_SDH_ENABLED 1
-#define NRF_SDH_BLE_ENABLED 0
+#define NRF_SDH_BLE_ENABLED 1
 #define NRF_SDH_ANT_ENABLED 0
 #define NRF_SDH_SOC_ENABLED 1
+
+/* BLE peripheral-only for now (watch ctrl service, 1 link). */
+#define NRF_SDH_BLE_PERIPHERAL_LINK_COUNT 1
+#define NRF_SDH_BLE_CENTRAL_LINK_COUNT 0
+#define NRF_SDH_BLE_TOTAL_LINK_COUNT 1
+#define NRF_SDH_BLE_VS_UUID_COUNT 1        /* one vendor-specific base UUID */
+#define NRF_SDH_BLE_GATT_MAX_MTU_SIZE 23    /* CIQ default MTU */
 
 /* ---- clock: XIAO has a 32.768 kHz crystal -------------------------------- */
 #define NRF_SDH_CLOCK_LF_SRC 1        /* XTAL */
