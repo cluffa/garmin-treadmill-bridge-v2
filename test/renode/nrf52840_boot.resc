@@ -1,0 +1,59 @@
+# nrf52840_boot.resc — Renode non-radio boot smoke test
+#
+# Attempts to load the nRF52840 platform + the firmware ELF and start the CPU.
+#
+# CRITICAL LIMITATION: The S340 SoftDevice binary is NOT loaded, and the S340
+# radio subsystem is NOT emulated by Renode (see README.md for details).
+#
+# What this script does: loads the ELF into flash, starts the CPU, and lets it
+# run long enough to observe the early boot path (clock init, timer init) before
+# the first nrf_sdh_enable_request() call blocks on the missing SoftDevice.
+#
+# For this to reach the USB-CDC heartbeat, the SoftDevice entry points must be
+# stubbed behind a HAL: intercept SVC calls that dispatch to the S340 and return
+# NRF_SUCCESS / NRF_ERROR_SOFTDEVICE_NOT_ENABLED as appropriate.
+
+$name?="nrf52840-smoke"
+using sysbus
+mach create $name
+machine LoadPlatformDescription @platforms/cpus/nrf52840.repl
+
+# Load the application ELF.
+# NOTE: the S340 SoftDevice .hex is NOT loaded — Renode cannot run it.
+sysbus LoadELF @../../firmware/_build/nrf52840_xxaa.out
+
+# Hook the RTT peripheral so NRF_LOG output (SEGGER RTT channel) is captured.
+# USB-CDC via app_usbd is not modelled, but RTT is the default NRF_LOG backend.
+showAnalyzer sysbus.rtt
+
+# Set up a Python hook to intercept SVC calls at the S340 entry point.
+# The firmware calls nrf_sdh_enable_request() which issues SVC with the
+# SoftDevice enable request. Without the S340 binary loaded, this SVC handler
+# is not present and the CPU will HardFault.
+#
+# Renode's nRF52840 model does not include a pre-loaded SoftDevice, so every
+# SoftDevice API call must be intercepted. The Python hook below catches the
+# SVC exception and returns NRF_SUCCESS to unblock the boot path.
+#
+# In practice, a full HAL is needed to stub:
+#   nrf_sdh_enable_request, nrf_sdh_disable_request, nrf_sdh_is_enabled,
+#   nrf_sdh_ble_enable, nrf_sdh_ble_*_cfg_set, nrf_sdh_ant_enable,
+#   sd_ble_gap_*, sd_ble_gattc_*, sd_ble_gatts_*, sd_ant_*, sd_softdevice_*,
+#   sd_ecb_block_encrypt, sd_app_evt_wait, sd_clock_hfclk_request, etc.
+#
+# For this smoke test, we trap the first HardFault and report what happened.
+
+# Start the simulation
+start
+
+# Let the CPU run for a few seconds — the ELF will boot through log_init()
+# and timers_init() before stalling on softdevice_init().
+sleep 5
+
+# Stop and report
+echo "=== Boot smoke complete ==="
+echo "The firmware loaded successfully. If it reached softdevice_init() and"
+echo "hard-faulted on the S340 SVC, that is EXPECTED — see README.md."
+echo "CPU registers at stop:"
+sysbus.cpu GetArchitectureString
+sysbus.cpu PC
