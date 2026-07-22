@@ -9,7 +9,7 @@
 # Build:  make
 #         make -j8 GNU_INSTALL_ROOT=... GNU_VERSION=7.2.1 SDK_ROOT=... S340_API=...
 #
-# Minimal boot skeleton (Task 1.1): SoftDevice, app_timer, NRF_LOG, idle loop.
+# Task 1.2: USB-CDC ACM console + interactive ctrl dispatch.
 
 PROJECT_NAME     := garmin_ant_bridge
 TARGETS          := nrf52840_xxaa
@@ -27,6 +27,10 @@ $(OUTPUT_DIRECTORY)/nrf52840_xxaa.out: LINKER_SCRIPT := xiao_nrf52840_s340.ld
 # ---- Project sources --------------------------------------------------------
 SRC_FILES += \
   $(FW_DIR)/main.c \
+  $(FW_DIR)/usb_cdc_log.c \
+  $(FW_DIR)/machine_stubs.c \
+  $(CORE_DIR)/ctrl_dispatch.c \
+  $(CORE_DIR)/ctrl_frames.c \
 
 # ---- SDK: startup + system --------------------------------------------------
 SRC_FILES += \
@@ -78,6 +82,17 @@ SRC_FILES += \
   $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_clock.c \
   $(SDK_ROOT)/integration/nrfx/legacy/nrf_drv_clock.c \
 
+# ---- SDK: USB device (USBD) + CDC ACM ----------------------------------------
+SRC_FILES += \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_usbd.c \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_power.c \
+  $(SDK_ROOT)/integration/nrfx/legacy/nrf_drv_power.c \
+  $(SDK_ROOT)/components/libraries/usbd/app_usbd.c \
+  $(SDK_ROOT)/components/libraries/usbd/app_usbd_core.c \
+  $(SDK_ROOT)/components/libraries/usbd/app_usbd_string_desc.c \
+  $(SDK_ROOT)/components/libraries/usbd/app_usbd_serial_num.c \
+  $(SDK_ROOT)/components/libraries/usbd/class/cdc/acm/app_usbd_cdc_acm.c \
+
 # ---- Include paths ----------------------------------------------------------
 INC_FOLDERS += \
   $(FW_DIR) \
@@ -104,11 +119,15 @@ INC_FOLDERS += \
   $(SDK_ROOT)/components/libraries/sortlist \
   $(SDK_ROOT)/components/libraries/strerror \
   $(SDK_ROOT)/components/libraries/timer \
+  $(SDK_ROOT)/components/libraries/usbd \
+  $(SDK_ROOT)/components/libraries/usbd/class/cdc \
+  $(SDK_ROOT)/components/libraries/usbd/class/cdc/acm \
   $(SDK_ROOT)/components/libraries/util \
   $(SDK_ROOT)/components/softdevice/common \
   $(SDK_ROOT)/components/toolchain/cmsis/include \
   $(SDK_ROOT)/external/fprintf \
   $(SDK_ROOT)/external/segger_rtt \
+  $(SDK_ROOT)/external/utf_converter \
   $(SDK_ROOT)/integration/nrfx \
   $(SDK_ROOT)/integration/nrfx/legacy \
   $(SDK_ROOT)/modules/nrfx \
