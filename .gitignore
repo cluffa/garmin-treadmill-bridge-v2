@@ -1,3 +1,21 @@
+# nRF5 SDK build artifacts + secret ANT+ network key (see ant_network_key.h.example)
+_build/
+firmware/ant_network_key.h
+test/host/test_*
+!test/host/test_*.c
+
+# DFU secrets
+dfu/dfu_private_key.pem
+dfu/*.zip
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
 # Prerequisites
 *.d
 
