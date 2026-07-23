@@ -18,6 +18,7 @@
 #include "ble_ctrl_svc.h"
 #include "boards.h"
 #include "nrf_drv_clock.h"
+#include "nrf_drv_power.h"
 #include "nrf_log.h"
 #include "nrf_log_ctrl.h"
 #include "nrf_log_default_backends.h"
@@ -82,6 +83,18 @@ static void log_init(void)
     NRF_LOG_DEFAULT_BACKENDS_INIT();
 }
 
+/* The POWER peripheral is shared with the SoftDevice: once the SoftDevice is
+ * enabled it owns POWER_CLOCK_IRQn, and nrf_drv_power_init() refuses with
+ * NRF_ERROR_INVALID_STATE. The USB stack needs the power driver (for VBUS
+ * detect events), so it must be initialised *before* the SoftDevice. After the
+ * SoftDevice is up, app_usbd_init()'s internal nrf_drv_power_init() returns the
+ * tolerated NRF_ERROR_MODULE_ALREADY_INITIALIZED, and USB power events are then
+ * routed via the SoftDevice SoC dispatcher (nrf_sdh_soc). */
+static void power_init(void)
+{
+    APP_ERROR_CHECK(nrf_drv_power_init(NULL));
+}
+
 static void softdevice_init(void)
 {
     APP_ERROR_CHECK(nrf_sdh_enable_request());
@@ -118,6 +131,7 @@ int main(void)
 {
     log_init();
     timers_init();
+    power_init();       /* must precede the SoftDevice (shared POWER periph) */
     softdevice_init();
     ble_stack_init();
     ant_stack_init();

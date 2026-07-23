@@ -267,34 +267,88 @@ ifneq ($(MAKECMDGOALS),clean)
     fi)
 endif
 
-# ---- Convenience targets ----------------------------------------------------
-.PHONY: default help dfu flash-dfu flash-sd flash-app
+# ---- Flash / DFU convenience targets ----------------------------------------
+# The XIAO nRF52840 has NO onboard debugger, so J-Link / nrfjprog are unusable.
+# SWD flashing goes through a Raspberry Pi Pico running CMSIS-DAP (debugprobe)
+# driven by pyocd; USB updates go through the Nordic Secure DFU bootloader via
+# nrfutil. Full procedure + wiring: docs/flashing.md.
+.PHONY: default help dfu flash-dfu flash-sd flash-app flash-full settings dfu-enter reset
 
 default: $(TARGETS)
 
 help:
-	@echo "targets: nrf52840_xxaa flash flash_softdevice erase dfu flash-dfu"
+	@echo "build:  nrf52840_xxaa"
+	@echo "swd:    flash-full (S340+app+bl+settings, chip erase) | flash-app (app only)"
+	@echo "        flash-sd (SoftDevice only) | settings | dfu-enter | reset"
+	@echo "usb:    dfu (build signed pkg) | flash-dfu SERIAL=/dev/cu.usbmodemXXXX"
+	@echo "see:    docs/flashing.md"
 
-# Signed USB-DFU package (S340 v7.0.1, hw 52)
-DFU_KEY  ?= ../dfu/dfu_private_key.pem
-DFU_ZIP  := $(OUTPUT_DIRECTORY)/app_dfu.zip
-APP_HEX  := $(OUTPUT_DIRECTORY)/nrf52840_xxaa.hex
+# ---- Tool / artifact locations (overridable) --------------------------------
+PYOCD          ?= pyocd
+PYOCD_TARGET   ?= nrf52840
+NRFUTIL        ?= nrfutil
+BOOTLOADER_HEX ?= /Users/alex/workspace/nrf52/build/bootloader_usb_s340.hex
 
+DFU_KEY      ?= ../dfu/dfu_private_key.pem
+DFU_ZIP      := $(OUTPUT_DIRECTORY)/app_dfu.zip
+APP_HEX      := $(OUTPUT_DIRECTORY)/nrf52840_xxaa.hex
+SETTINGS_HEX := $(OUTPUT_DIRECTORY)/settings.hex
+
+# GPREGRET DFU-start magic (BOOTLOADER_DFU_START) + POWER->GPREGRET address.
+GPREGRET_ADDR  := 0x4000051C
+GPREGRET_DFU   := 0xB1
+
+# ---- Signed USB-DFU package (S340 v7.0.1, hw 52) ----------------------------
 dfu: $(APP_HEX)
 	@echo "  Creating DFU package..."
-	nrfutil pkg generate \
+	$(NRFUTIL) pkg generate \
 	  --hw-version 52 --sd-req 0xCE \
 	  --application $(APP_HEX) --application-version 1 \
 	  --key-file $(DFU_KEY) \
 	  $(DFU_ZIP)
 	@echo "  DFU package: $(DFU_ZIP)"
 
+# Push a signed package over USB to the Nordic bootloader (no SWD needed).
+# Enter DFU first with `make dfu-enter` (or an already-invalid app auto-enters).
 flash-dfu:
-	@test -n "$(SERIAL)" || { echo "ERROR: SERIAL=/dev/cu.usbmodemXXXX required"; exit 1; }
-	nrfutil dfu usb-serial -pkg $(DFU_ZIP) -p $(SERIAL)
+	@test -n "$(SERIAL)" || { echo "ERROR: SERIAL=/dev/cu.usbmodemXXXX required (see docs/flashing.md §6)"; exit 1; }
+	$(NRFUTIL) dfu usb-serial -pkg $(DFU_ZIP) -p $(SERIAL)
 
+# ---- SWD flashing via pyocd (Pico CMSIS-DAP probe) --------------------------
+# Bootloader settings page: marks the app valid so the bootloader boots it.
+# --no-backup is REQUIRED — the default backup page (0xFE000) collides with the
+# MBR params page.
+settings: $(APP_HEX)
+	$(NRFUTIL) settings generate --family NRF52840 \
+	  --application $(APP_HEX) \
+	  --application-version 1 --bootloader-version 1 \
+	  --bl-settings-version 2 --no-backup \
+	  $(SETTINGS_HEX)
+
+# First-time provisioning: SoftDevice + app + bootloader + settings in one
+# chip-erase pass (ERASEALL also clears UICR; the bootloader hex rewrites the
+# UICR NRFFW pointers). Makes the board bootable AND updatable over USB.
+flash-full: $(APP_HEX) settings
+	$(PYOCD) flash -t $(PYOCD_TARGET) --erase chip \
+	  $(S340_HEX) $(APP_HEX) $(BOOTLOADER_HEX) $(SETTINGS_HEX)
+	$(PYOCD) reset -t $(PYOCD_TARGET)
+
+# SoftDevice only (chip-erases; follow with flash-app or use flash-full instead).
 flash-sd:
-	@echo "TODO: flash SoftDevice (nrfjprog -f nrf52 --program $(S340_HEX) ...)"
+	$(PYOCD) flash -t $(PYOCD_TARGET) --erase chip $(S340_HEX)
 
-flash-app:
-	@echo "TODO: flash app (nrfjprog -f nrf52 --program $(OUTPUT_DIRECTORY)/nrf52840_xxaa.hex ...)"
+# Fast app-only reflash (sector erase). NOTE: does not regenerate the settings
+# page, so a *changed* app may fail bootloader validation — re-run flash-full or
+# update via USB-DFU for a changed app. See docs/flashing.md §5.
+flash-app: $(APP_HEX)
+	$(PYOCD) flash -t $(PYOCD_TARGET) --erase sector $(APP_HEX)
+	$(PYOCD) reset -t $(PYOCD_TARGET)
+
+# Kick the running app into the DFU bootloader over SWD: set GPREGRET magic and
+# do a *software* reset (SYSRESETREQ preserves GPREGRET; POR/pin reset clears it).
+dfu-enter:
+	$(PYOCD) commander -t $(PYOCD_TARGET) \
+	  -c "halt" -c "write32 $(GPREGRET_ADDR) $(GPREGRET_DFU)" -c "reset -t sw"
+
+reset:
+	$(PYOCD) reset -t $(PYOCD_TARGET)

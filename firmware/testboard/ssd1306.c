@@ -145,26 +145,24 @@ static void ssd1306_write_data(const uint8_t *data, uint16_t len)
 {
     /*
      * The SSD1306 expects a control byte (0x40 = Co=0, D/C#=1 → data)
-     * followed by the pixel bytes.  The nRF5 TWI driver can't prepend
-     * a control byte to a multi-byte write without a copy, so we send
-     * the control byte first, then the data.
+     * followed by the pixel bytes, all in ONE continuous I2C transaction
+     * (single START..STOP). Splitting the control byte and the data into two
+     * transactions issues a repeated START, after which the SSD1306 treats the
+     * next byte as a fresh control byte — corrupting the pixel stream (garbled
+     * display). So we prepend 0x40 into a single buffer and send it in one tx.
      *
-     * Since the framebuffer is 1024 bytes, we split into page-sized
-     * chunks to keep the TWI buffer reasonable.
+     * The framebuffer is 1024 bytes; we send one page (128 cols) per
+     * transaction. GDDRAM auto-increments across transactions in horizontal
+     * addressing mode, so page-sized chunks are fine.
      */
+    uint8_t buf[1 + 128];
     while (len > 0) {
-        /* Send control byte + one byte from data per transaction makes
-         * it easy: we can just use a small local buffer.  However, for
-         * performance, write the control byte once then do the data
-         * separately — the SSD1306 stays in data mode across I2C
-         * transactions. */
-        static uint8_t ctrl = 0x40;
-        (void)nrf_drv_twi_tx(&s_twi, 0x3C, &ctrl, 1, true); /* no STOP */
+        uint16_t chunk = (len > 128) ? 128 : len;
 
-        uint16_t chunk = len;
-        if (chunk > 128) chunk = 128;  /* reasonable per-transaction size */
+        buf[0] = 0x40;  /* Co=0, D/C#=1 → data */
+        memcpy(&buf[1], data, chunk);
 
-        APP_ERROR_CHECK(nrf_drv_twi_tx(&s_twi, 0x3C, data, chunk, false));
+        APP_ERROR_CHECK(nrf_drv_twi_tx(&s_twi, 0x3C, buf, chunk + 1, false));
         data += chunk;
         len  -= chunk;
     }

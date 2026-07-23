@@ -110,7 +110,11 @@ static void cdc_acm_user_ev_handler(app_usbd_class_inst_t const *p_inst,
     switch (event) {
     case APP_USBD_CDC_ACM_USER_EVT_PORT_OPEN:
         NRF_LOG_INFO("CDC ACM port opened");
-        (void)app_usbd_cdc_acm_read(&m_cdc_acm, s_rx_buf, sizeof(s_rx_buf));
+        /* Arm the first read. Must be read_any(), NOT read(): read() only
+         * raises RX_DONE once the *full* requested length has accumulated, so a
+         * short interactive line like "STATUS\n" (7 B) would never be delivered
+         * until 64 B piled up. read_any() delivers whatever has arrived. */
+        (void)app_usbd_cdc_acm_read_any(&m_cdc_acm, s_rx_buf, sizeof(s_rx_buf));
         break;
 
     case APP_USBD_CDC_ACM_USER_EVT_PORT_CLOSE:
@@ -121,11 +125,19 @@ static void cdc_acm_user_ev_handler(app_usbd_class_inst_t const *p_inst,
         break;
 
     case APP_USBD_CDC_ACM_USER_EVT_RX_DONE: {
-        size_t avail = app_usbd_cdc_acm_rx_size(p_cdc_acm);
-        if (avail > 0 && avail <= sizeof(s_rx_buf)) {
-            feed_line_reader(s_rx_buf, avail);
-        }
-        (void)app_usbd_cdc_acm_read(&m_cdc_acm, s_rx_buf, sizeof(s_rx_buf));
+        /* Drain loop: process the completed read, then re-arm with read_any().
+         * When read_any() returns NRF_SUCCESS the next chunk is already in the
+         * internal buffer (no further RX_DONE will fire for it), so we must loop
+         * and process it here; NRF_ERROR_IO_PENDING means "wait for RX_DONE". */
+        ret_code_t ret;
+        do {
+            size_t avail = app_usbd_cdc_acm_rx_size(p_cdc_acm);
+            if (avail > 0 && avail <= sizeof(s_rx_buf)) {
+                feed_line_reader(s_rx_buf, avail);
+            }
+            ret = app_usbd_cdc_acm_read_any(&m_cdc_acm, s_rx_buf,
+                                            sizeof(s_rx_buf));
+        } while (ret == NRF_SUCCESS);
         break;
     }
 

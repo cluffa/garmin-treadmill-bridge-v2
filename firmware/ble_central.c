@@ -840,10 +840,12 @@ static float incline_pct_to_value(float pct)
 
 void machine_start_scan(void)
 {
-    /* If currently connected, disconnect first (watch-commanded scan). */
-    if (s_conn_handle != BLE_CONN_HANDLE_INVALID) {
-        ble_central_disconnect();
-    }
+    /* Watch-commanded scan: tear down any active link or in-flight connect
+     * attempt first. ble_central_disconnect() already no-ops if neither
+     * applies, and it clears s_connecting, so this also covers the case
+     * where SCAN is pressed mid-connect (was previously silently dropped by
+     * ble_central_scan_start()'s own s_connecting guard). */
+    ble_central_disconnect();
     ble_central_scan_start();
 }
 

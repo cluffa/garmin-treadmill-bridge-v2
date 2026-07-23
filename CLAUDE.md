@@ -13,13 +13,13 @@ make -C firmware -j8 \
   SDK_ROOT=/Users/alex/nRF5_SDK_17.1.0_ddde560 \
   S340_API=/Users/alex/workspace/nrf52/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.API/include
 
-# DFU packaging
-make -C firmware dfu
-
-# Flash (requires hardware)
-make -C firmware flash-dfu SERIAL=/dev/cu.usbmodemXXXX
-make -C firmware flash-sd          # one-time SoftDevice flash
-make -C firmware flash-app         # SWD fallback
+# Flash — full procedure, wiring, and gotchas: docs/flashing.md
+# No onboard debugger: SWD via a Pico/CMSIS-DAP + pyocd (NOT nrfjprog); USB via nrfutil.
+make -C firmware flash-full                        # first-time: S340+app+bootloader+settings (SWD)
+make -C firmware flash-app                         # fast app-only reflash (SWD)
+make -C firmware dfu                               # build signed USB-DFU package
+make -C firmware dfu-enter                         # kick running app into DFU (SWD, GPREGRET)
+make -C firmware flash-dfu SERIAL=/dev/cu.usbmodemXXXX   # push package over USB
 ```
 
 ## Toolchain
@@ -64,6 +64,23 @@ simultaneous FTMS+iFit connections.
 - `ant_network_key.h` — see `ant_network_key.h.example`.
 - `dfu/dfu_private_key.pem` — see `dfu/dfu_private_key.pem.example`.
 
+## Architecture
+
+`core/` is platform-agnostic protocol logic (parsers, FSM, belt-control policy, ANT SDM encoding).
+`firmware/` is the nRF5-SDK + S340 radio glue: BLE peripheral (watch-facing ctrl-svc), BLE central (treadmill-facing FTMS/iFit), ANT master (footpod broadcast), USB-CDC console.
+The bridge between them is `core/machine.h` — a unified facade that auto-detects FTMS (0x1826) and iFit (0x1533) into one device list and routes connect/speed/incline/stop to the right adapter.
+`firmware/app_state.h` is the shared struct all three radios and the testboard render from.
+
+## `firmware/` Makefile TESTBOARD stamp
+
+The Makefile auto-detects `TESTBOARD` changes between builds and force-cleans objects.
+Don't be surprised by a clean rebuild when you toggle between `TESTBOARD=0` and `TESTBOARD=1`.
+
 ## Source of truth for vendored files
 
 The old repo at `/Users/alex/workspace/nrf52/garmin-treadmill-bridge/` (referred to as `$OLD`).
+
+## Finishing plan
+
+All code milestones (M0-M4) are complete as of `fc5ac15`. The only remaining step is the
+M4.2 three-radio concurrency gate on physical hardware. See `docs/finishing-plan.md`.
