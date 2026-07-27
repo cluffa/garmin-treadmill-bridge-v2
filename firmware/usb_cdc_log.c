@@ -20,6 +20,7 @@
 #include "app_usbd_core.h"
 #include "app_usbd_serial_num.h"
 #include "app_usbd_string_desc.h"
+#include "app_util_platform.h"
 #include "nrf_drv_power.h"
 #include "nrf_drv_usbd.h"
 #include "nrf_log.h"
@@ -47,6 +48,33 @@ static size_t s_line_pos;
 #define CDC_READ_SIZE 64
 
 static char s_rx_buf[CDC_READ_SIZE];
+
+/* ---- TX ring buffer ------------------------------------------------------- */
+
+/*
+ * app_usbd_cdc_acm_write() builds a transfer descriptor that points into the
+ * caller's buffer and queues it for asynchronous EasyDMA.  The buffer MUST
+ * outlive the call.  A stack buffer is UB and silently corrupts USB output.
+ *
+ * usb_cdc_log_write() is called from both IRQ (app_timer -> heartbeat_cb) and
+ * thread (cdc_tx_sink) context, so the two can preempt each other.  A single
+ * static buffer is therefore not enough either — the IRQ path could overwrite
+ * it while a thread-mode transfer is still in flight.
+ *
+ * Solution: a small static ring of endpoint-sized buffers.  The write side
+ * claims a free slot under critical-section protection (soft-irq-safe);
+ * APP_USBD_CDC_ACM_USER_EVT_TX_DONE releases it.  If no slot is free the
+ * message is dropped (with a diagnostic counter) — blocking in IRQ context
+ * would stall the SoftDevice event dispatch.
+ */
+
+#define CDC_TX_RING_SIZE 4  /* power of two; 4 * 64 = 256 B */
+
+static char      s_cdc_tx_ring[CDC_TX_RING_SIZE][NRF_DRV_USBD_EPSIZE];
+static volatile uint8_t  s_cdc_tx_wr;   /* next slot to claim              */
+static volatile uint8_t  s_cdc_tx_rd;   /* next slot TX_DONE will release  */
+static volatile uint8_t  s_cdc_tx_cnt;  /* outstanding transfers (0..N)    */
+static volatile uint32_t s_cdc_tx_drops;/* diagnostic: messages dropped    */
 
 /* ---- Forward declarations ------------------------------------------------- */
 
@@ -110,6 +138,15 @@ static void cdc_acm_user_ev_handler(app_usbd_class_inst_t const *p_inst,
     switch (event) {
     case APP_USBD_CDC_ACM_USER_EVT_PORT_OPEN:
         NRF_LOG_INFO("CDC ACM port opened");
+
+        /* Reset the TX ring — any outstanding transfers are stale. */
+        CRITICAL_REGION_ENTER();
+        s_cdc_tx_wr   = 0;
+        s_cdc_tx_rd   = 0;
+        s_cdc_tx_cnt  = 0;
+        s_cdc_tx_drops = 0;
+        CRITICAL_REGION_EXIT();
+
         /* Arm the first read. Must be read_any(), NOT read(): read() only
          * raises RX_DONE once the *full* requested length has accumulated, so a
          * short interactive line like "STATUS\n" (7 B) would never be delivered
@@ -122,6 +159,15 @@ static void cdc_acm_user_ev_handler(app_usbd_class_inst_t const *p_inst,
         break;
 
     case APP_USBD_CDC_ACM_USER_EVT_TX_DONE:
+        /* Release the oldest outstanding TX buffer back to the ring.
+         * Transfers complete in FIFO order on a single IN endpoint so
+         * simply advancing s_cdc_tx_rd is correct. */
+        CRITICAL_REGION_ENTER();
+        if (s_cdc_tx_cnt > 0) {
+            s_cdc_tx_cnt--;
+            s_cdc_tx_rd = (uint8_t)(s_cdc_tx_rd + 1) % CDC_TX_RING_SIZE;
+        }
+        CRITICAL_REGION_EXIT();
         break;
 
     case APP_USBD_CDC_ACM_USER_EVT_RX_DONE: {
@@ -209,16 +255,49 @@ void usb_cdc_log_write(const char *msg)
     size_t len = strlen(msg);
     if (len == 0) return;
 
-    /* Build a CR+LF terminated line; truncate to endpoint size if needed */
-    char buf[NRF_DRV_USBD_EPSIZE];
-    if (len > sizeof(buf) - 2) {
-        len = sizeof(buf) - 2;
+    /* Truncate to what fits in one endpoint packet (minus CR+LF). */
+    if (len > NRF_DRV_USBD_EPSIZE - 2) {
+        len = NRF_DRV_USBD_EPSIZE - 2;
     }
-    memcpy(buf, msg, len);
-    buf[len]     = '\r';
-    buf[len + 1] = '\n';
 
-    (void)app_usbd_cdc_acm_write(&m_cdc_acm, buf, len + 2);
+    /* Claim a slot, fill it, and queue it as ONE atomic step.
+     *
+     * usb_cdc_log_write() runs in both IRQ context (app_timer -> heartbeat_cb)
+     * and thread context (cdc_tx_sink), so the two preempt each other. The
+     * whole sequence is inside the critical region rather than just the claim,
+     * because the rollback below un-claims by rewinding s_cdc_tx_wr: if another
+     * writer could slip in between the failed write and the rollback, we would
+     * rewind over *its* slot and hand the same buffer to two writers — exactly
+     * the corruption this ring exists to prevent. app_usbd_cdc_acm_write() only
+     * queues a transfer descriptor (it does not block and calls no SoftDevice
+     * API), so the region stays short.
+     *
+     * NOTE: CRITICAL_REGION_ENTER/EXIT expand to a { } block scope
+     * (app_util_platform.h, SOFTDEVICE_PRESENT) and require exactly one
+     * EXIT per ENTER in the same scope — no early returns inside. */
+    CRITICAL_REGION_ENTER();
+    if (s_cdc_tx_cnt >= CDC_TX_RING_SIZE) {
+        s_cdc_tx_drops++;                       /* ring full: drop, never block */
+    } else {
+        uint8_t slot = s_cdc_tx_wr;
+        char   *buf  = s_cdc_tx_ring[slot];
+
+        memcpy(buf, msg, len);
+        buf[len]     = '\r';
+        buf[len + 1] = '\n';
+
+        s_cdc_tx_wr = (uint8_t)((s_cdc_tx_wr + 1) % CDC_TX_RING_SIZE);
+        s_cdc_tx_cnt++;
+
+        /* A failed write never queued a transfer, so TX_DONE will never fire
+         * for this slot — give it straight back or the ring drains for good. */
+        if (app_usbd_cdc_acm_write(&m_cdc_acm, buf, len + 2) != NRF_SUCCESS) {
+            s_cdc_tx_wr = slot;
+            s_cdc_tx_cnt--;
+            s_cdc_tx_drops++;
+        }
+    }
+    CRITICAL_REGION_EXIT();
 }
 
 /* ---- Weak hook (overridable by application) ------------------------------- */
