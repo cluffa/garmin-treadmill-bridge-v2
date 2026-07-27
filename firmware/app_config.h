@@ -4,6 +4,11 @@
  * sdk_config.h (the Makefile defines USE_APP_CONFIG, which every SDK
  * sdk_config.h template honors by including this file first).
  *
+ * THIS FILE ALWAYS WINS. Every value in sdk_config.h is #ifndef-guarded, so a
+ * setting defined here silently overrides whatever sdk_config.h says. Editing
+ * sdk_config.h to change something defined below has NO effect — change it
+ * here. (f3e201f learned this the hard way with the LF clock.)
+ *
  * Minimal boot skeleton (Task 1.1): SoftDevice enable, app_timer, NRF_LOG,
  * nrf_pwr_mgmt, idle heartbeat. No BLE/ANT/testboard yet.
  */
