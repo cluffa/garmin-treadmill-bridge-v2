@@ -238,6 +238,63 @@ static void ble_evt_handler(const ble_evt_t *p_evt, void *p_ctx)
         }
         break;
 
+    case BLE_GATTS_EVT_SYS_ATTR_MISSING:
+        if (p_evt->evt.gatts_evt.conn_handle == s_conn_handle) {
+            uint32_t err = sd_ble_gatts_sys_attr_set(s_conn_handle, NULL, 0, 0);
+            if (err != NRF_SUCCESS) {
+                NRF_LOG_WARNING("ctrl_svc: sys_attr_set err 0x%x",
+                                (unsigned int)err);
+            }
+        }
+        break;
+
+    case BLE_GATTS_EVT_EXCHANGE_MTU_REQUEST:
+        if (p_evt->evt.gatts_evt.conn_handle == s_conn_handle) {
+            uint32_t err = sd_ble_gatts_exchange_mtu_reply(s_conn_handle,
+                                NRF_SDH_BLE_GATT_MAX_MTU_SIZE);
+            if (err != NRF_SUCCESS) {
+                NRF_LOG_WARNING("ctrl_svc: mtu reply err 0x%x",
+                                (unsigned int)err);
+            }
+        }
+        break;
+
+    case BLE_GAP_EVT_CONN_PARAM_UPDATE_REQUEST:
+        /* The watch drives its own connection parameters; accept them. This
+         * link is ours — ble_central deliberately ignores handles that are
+         * not its treadmill link, so nobody else answers this. */
+        if (gap->conn_handle == s_conn_handle) {
+            uint32_t err = sd_ble_gap_conn_param_update(s_conn_handle,
+                                &gap->params.conn_param_update_request.conn_params);
+            if (err != NRF_SUCCESS) {
+                NRF_LOG_WARNING("ctrl_svc: conn param update reply err 0x%x",
+                                (unsigned int)err);
+            }
+        }
+        break;
+
+    case BLE_GAP_EVT_PHY_UPDATE_REQUEST:
+        if (gap->conn_handle == s_conn_handle) {
+            ble_gap_phys_t phys = {
+                .tx_phys = BLE_GAP_PHY_AUTO,
+                .rx_phys = BLE_GAP_PHY_AUTO,
+            };
+            uint32_t err = sd_ble_gap_phy_update(s_conn_handle, &phys);
+            if (err != NRF_SUCCESS) {
+                NRF_LOG_WARNING("ctrl_svc: phy update reply err 0x%x",
+                                (unsigned int)err);
+            }
+        }
+        break;
+
+    case BLE_GATTS_EVT_TIMEOUT:
+        if (p_evt->evt.gatts_evt.conn_handle == s_conn_handle) {
+            NRF_LOG_WARNING("ctrl_svc: GATT server timeout — disconnecting");
+            (void)sd_ble_gap_disconnect(s_conn_handle,
+                                        BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
+        }
+        break;
+
     default:
         break;
     }

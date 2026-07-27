@@ -473,11 +473,13 @@ static void connect_to(const ftms_device_t *dev)
         .scan_phys     = BLE_GAP_PHY_1MBPS,
         .filter_policy = BLE_GAP_SCAN_FP_ACCEPT_ALL,
     };
+    /* NRF_BLE_SCAN_* macros are in milliseconds; convert to GAP units
+     * (conn interval in 1.25 ms units, supervision timeout in 10 ms units). */
     static const ble_gap_conn_params_t conn_params = {
-        .min_conn_interval = NRF_BLE_SCAN_MIN_CONNECTION_INTERVAL,
-        .max_conn_interval = NRF_BLE_SCAN_MAX_CONNECTION_INTERVAL,
+        .min_conn_interval = MSEC_TO_UNITS(NRF_BLE_SCAN_MIN_CONNECTION_INTERVAL, UNIT_1_25_MS),
+        .max_conn_interval = MSEC_TO_UNITS(NRF_BLE_SCAN_MAX_CONNECTION_INTERVAL, UNIT_1_25_MS),
         .slave_latency     = NRF_BLE_SCAN_SLAVE_LATENCY,
-        .conn_sup_timeout  = NRF_BLE_SCAN_SUPERVISION_TIMEOUT,
+        .conn_sup_timeout  = MSEC_TO_UNITS(NRF_BLE_SCAN_SUPERVISION_TIMEOUT, UNIT_10_MS),
     };
 
     uint32_t err = sd_ble_gap_connect(&addr, &scan_params, &conn_params,
@@ -619,6 +621,37 @@ static void ble_evt_handler(const ble_evt_t *p_evt, void *p_ctx)
         break;
 
     case BLE_GAP_EVT_CONN_PARAM_UPDATE:
+        break;
+
+    /* Every registered observer sees every BLE event, so both of the request
+     * handlers below MUST check the handle is our treadmill link — otherwise
+     * we would also answer on the watch's peripheral link, which ble_ctrl_svc
+     * owns, and both modules would reply to the same request. */
+    case BLE_GAP_EVT_CONN_PARAM_UPDATE_REQUEST:
+        /* The treadmill (peripheral) may request its own connection
+         * parameters; accept them so the link does not time out. */
+        if (gap->conn_handle == s_conn_handle) {
+            uint32_t err = sd_ble_gap_conn_param_update(gap->conn_handle,
+                                &gap->params.conn_param_update_request.conn_params);
+            if (err != NRF_SUCCESS) {
+                NRF_LOG_WARNING("central: conn param update reply err 0x%x",
+                                (unsigned int)err);
+            }
+        }
+        break;
+
+    case BLE_GAP_EVT_PHY_UPDATE_REQUEST:
+        if (gap->conn_handle == s_conn_handle) {
+            ble_gap_phys_t phys = {
+                .tx_phys = BLE_GAP_PHY_AUTO,
+                .rx_phys = BLE_GAP_PHY_AUTO,
+            };
+            uint32_t err = sd_ble_gap_phy_update(gap->conn_handle, &phys);
+            if (err != NRF_SUCCESS) {
+                NRF_LOG_WARNING("central: phy update reply err 0x%x",
+                                (unsigned int)err);
+            }
+        }
         break;
 
     case BLE_GATTC_EVT_PRIM_SRVC_DISC_RSP:
