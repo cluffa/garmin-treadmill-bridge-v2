@@ -15,6 +15,7 @@
 #include "app_error.h"
 #include "app_state.h"
 #include "app_timer.h"
+#include "app_util_platform.h"
 #include "ble_gap.h"
 #include "ble_gattc.h"
 #include "ble_srv_common.h"
@@ -99,6 +100,14 @@ static uint16_t         s_cp_handle;     /* control/write value handle   */
 static uint16_t         s_cccd_handle;   /* notify char CCCD             */
 static bool             s_write_busy;    /* one WRITE_REQ in flight max  */
 
+/* GATTC retry: transient NRF_ERROR_BUSY / NRF_ERROR_RESOURCES on
+ * discovery / CCCD write under three-radio concurrency. */
+#define GATTC_RETRY_MS         5
+#define GATTC_RETRY_MAX        5
+APP_TIMER_DEF(m_gattc_retry_timer);
+static uint8_t  s_gattc_retries;
+static uint16_t s_gattc_retry_from;  /* from-handle for CHR / DESC retry */
+
 /* iFit odometer: the frames carry no distance — integrate from speed. */
 static float            s_distance_m;
 static uint32_t         s_last_rx_ticks;
@@ -181,6 +190,128 @@ static void update_link_state(void)
     app_state()->central_link = st;
 }
 
+/* ---- GATTC retry helpers ----------------------------------------------------- */
+
+/* Terminal discovery failure: log, disconnect, mark fault.  The disconnect
+ * event handler cleans up and re-enters scanning. */
+static void gattc_fail(void)
+{
+    NRF_LOG_WARNING("central: GATT discovery failed — disconnecting");
+    app_state_set_fault(1);  /* discovery fault */
+    s_stage = DISC_IDLE;
+    s_gattc_retries = 0;
+    (void)sd_ble_gap_disconnect(s_conn_handle,
+                                BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
+}
+
+/* Re-invoke whichever GATTC procedure s_stage names with saved params. */
+static void gattc_retry_dispatch(void)
+{
+    uint32_t err = NRF_SUCCESS;
+
+    switch (s_stage) {
+    case DISC_SVC: {
+        ble_uuid_t svc;
+        if (s_proto == MACHINE_PROTO_IFIT) {
+            svc.uuid = IFIT_SVC_UUID;
+            svc.type = s_ifit_uuid_type;
+        } else {
+            svc.uuid = FTMS_SVC_UUID;
+            svc.type = BLE_UUID_TYPE_BLE;
+        }
+        err = sd_ble_gattc_primary_services_discover(s_conn_handle,
+                                                     0x0001, &svc);
+        break;
+    }
+    case DISC_CHR: {
+        ble_gattc_handle_range_t r = { .start_handle = s_gattc_retry_from,
+                                       .end_handle   = s_svc_end };
+        err = sd_ble_gattc_characteristics_discover(s_conn_handle, &r);
+        break;
+    }
+    case DISC_DESC: {
+        ble_gattc_handle_range_t r = { .start_handle = s_gattc_retry_from,
+                                       .end_handle   = s_svc_end };
+        err = sd_ble_gattc_descriptors_discover(s_conn_handle, &r);
+        break;
+    }
+    case DISC_CCCD_WR: {
+        static const uint8_t en[2] = {0x01, 0x00};
+        ble_gattc_write_params_t w = {
+            .write_op = BLE_GATT_OP_WRITE_REQ,
+            .handle   = s_cccd_handle,
+            .offset   = 0,
+            .len      = sizeof en,
+            .p_value  = en,
+        };
+        err = sd_ble_gattc_write(s_conn_handle, &w);
+        break;
+    }
+    default:
+        return;
+    }
+
+    if (err == NRF_SUCCESS) return;
+
+    if (err == NRF_ERROR_BUSY || err == NRF_ERROR_RESOURCES) {
+        if (s_gattc_retries < GATTC_RETRY_MAX) {
+            s_gattc_retries++;
+            NRF_LOG_WARNING("central: GATTC busy retry %u/%u",
+                            (unsigned int)s_gattc_retries,
+                            (unsigned int)GATTC_RETRY_MAX);
+            /* Not APP_ERROR_CHECK: app_timer_start can return NO_MEM when
+             * the timer op queue is full, which is precisely the kind of
+             * load this retry path exists to survive. Resetting here would
+             * defeat the whole point. Fall through to the terminal path. */
+            if (app_timer_start(m_gattc_retry_timer,
+                                APP_TIMER_TICKS(GATTC_RETRY_MS),
+                                NULL) == NRF_SUCCESS) {
+                return;
+            }
+            NRF_LOG_WARNING("central: GATTC retry timer unavailable");
+        }
+        NRF_LOG_WARNING("central: GATTC retries exhausted");
+    }
+    gattc_fail();
+}
+
+static void gattc_retry_cb(void *ctx)
+{
+    (void)ctx;
+    gattc_retry_dispatch();
+}
+
+/* One entry point for the four GATTC-trigger sites.  NRF_ERROR_BUSY /
+ * NRF_ERROR_RESOURCES start a bounded retry; any other error, or retry
+ * exhaustion, calls gattc_fail(). */
+static void gattc_maybe_retry(uint32_t err)
+{
+    if (err == NRF_SUCCESS) return;
+
+    if (err == NRF_ERROR_BUSY || err == NRF_ERROR_RESOURCES) {
+        if (s_gattc_retries < GATTC_RETRY_MAX) {
+            s_gattc_retries++;
+            NRF_LOG_WARNING("central: GATTC busy retry %u/%u",
+                            (unsigned int)s_gattc_retries,
+                            (unsigned int)GATTC_RETRY_MAX);
+            /* Not APP_ERROR_CHECK: app_timer_start can return NO_MEM when
+             * the timer op queue is full, which is precisely the kind of
+             * load this retry path exists to survive. Resetting here would
+             * defeat the whole point. Fall through to the terminal path. */
+            if (app_timer_start(m_gattc_retry_timer,
+                                APP_TIMER_TICKS(GATTC_RETRY_MS),
+                                NULL) == NRF_SUCCESS) {
+                return;
+            }
+            NRF_LOG_WARNING("central: GATTC retry timer unavailable");
+        }
+        NRF_LOG_WARNING("central: GATTC retries exhausted");
+    } else {
+        NRF_LOG_WARNING("central: GATTC err 0x%x", (unsigned int)err);
+    }
+    gattc_fail();
+}
+
 /* ---- discovery steps --------------------------------------------------------- */
 
 static void disc_start(void)
@@ -195,8 +326,9 @@ static void disc_start(void)
     }
     s_stage = DISC_SVC;
     s_svc_end = s_data_handle = s_cp_handle = s_cccd_handle = 0;
-    APP_ERROR_CHECK(sd_ble_gattc_primary_services_discover(s_conn_handle,
-                                                           0x0001, &svc));
+    s_gattc_retries = 0;
+    gattc_maybe_retry(sd_ble_gattc_primary_services_discover(s_conn_handle,
+                                                              0x0001, &svc));
 }
 
 static void disc_continue_chrs(uint16_t from)
@@ -204,7 +336,9 @@ static void disc_continue_chrs(uint16_t from)
     ble_gattc_handle_range_t r = { .start_handle = from,
                                    .end_handle = s_svc_end };
     s_stage = DISC_CHR;
-    APP_ERROR_CHECK(sd_ble_gattc_characteristics_discover(s_conn_handle, &r));
+    s_gattc_retry_from = from;
+    s_gattc_retries = 0;
+    gattc_maybe_retry(sd_ble_gattc_characteristics_discover(s_conn_handle, &r));
 }
 
 static void disc_continue_descs(uint16_t from)
@@ -212,14 +346,16 @@ static void disc_continue_descs(uint16_t from)
     ble_gattc_handle_range_t r = { .start_handle = from,
                                    .end_handle = s_svc_end };
     s_stage = DISC_DESC;
-    APP_ERROR_CHECK(sd_ble_gattc_descriptors_discover(s_conn_handle, &r));
+    s_gattc_retry_from = from;
+    s_gattc_retries = 0;
+    gattc_maybe_retry(sd_ble_gattc_descriptors_discover(s_conn_handle, &r));
 }
 
 static void disc_finish_chrs(void)
 {
     if (s_data_handle == 0) {
         NRF_LOG_WARNING("central: notify characteristic not found");
-        s_stage = DISC_IDLE;
+        gattc_fail();
         return;
     }
     if (s_cp_handle == 0) {
@@ -227,7 +363,7 @@ static void disc_finish_chrs(void)
     }
     if (s_data_handle >= s_svc_end) {
         NRF_LOG_WARNING("central: no room for CCCD after notify char");
-        s_stage = DISC_IDLE;
+        gattc_fail();
         return;
     }
     disc_continue_descs((uint16_t)(s_data_handle + 1));
@@ -244,7 +380,8 @@ static void cccd_subscribe(void)
         .p_value  = en,
     };
     s_stage = DISC_CCCD_WR;
-    APP_ERROR_CHECK(sd_ble_gattc_write(s_conn_handle, &w));
+    s_gattc_retries = 0;
+    gattc_maybe_retry(sd_ble_gattc_write(s_conn_handle, &w));
 }
 
 static void subscribed(void)
@@ -366,7 +503,7 @@ static void on_desc_disc_rsp(const ble_gattc_evt_t *e)
         }
     }
     NRF_LOG_WARNING("central: CCCD not found — no notifications");
-    s_stage = DISC_IDLE;
+    gattc_fail();
 }
 
 static void on_write_rsp(const ble_gattc_evt_t *e)
@@ -577,6 +714,7 @@ static void ble_evt_handler(const ble_evt_t *p_evt, void *p_ctx)
         s_conn_handle = gap->conn_handle;
         s_connecting = false;
         s_scanning = false;
+        s_gattc_retries = 0;
         NRF_LOG_INFO("central: connected \"%s\" (%s, handle %u)",
                      nrf_log_push((char *)s_target.name),
                      s_proto == MACHINE_PROTO_IFIT ? "iFit" : "FTMS",
@@ -669,6 +807,17 @@ static void ble_evt_handler(const ble_evt_t *p_evt, void *p_ctx)
     case BLE_GATTC_EVT_HVX:
         on_hvx(&p_evt->evt.gattc_evt);
         break;
+    case BLE_GATTC_EVT_WRITE_CMD_TX_COMPLETE:
+        /* WRITE_CMD queue slots freed. Full requeue of dropped iFit frames
+         * (tracking a pending-frames queue and re-driving them here) is
+         * deferred to a HW bring-up pass once real queue-pressure patterns
+         * are observed.
+         * DEBUG, not INFO: this fires up to 7x per 500 ms iFit tick, and
+         * NRF_LOG now also goes out over USB-CDC — at INFO it would swamp
+         * the TX ring and push out the messages you actually need. */
+        NRF_LOG_DEBUG("central: TX complete %u slot(s)",
+                      (unsigned int)p_evt->evt.gattc_evt.params.write_cmd_tx_complete.count);
+        break;
     case BLE_GATTC_EVT_TIMEOUT:
         NRF_LOG_WARNING("central: GATT timeout — disconnecting");
         (void)sd_ble_gap_disconnect(p_evt->evt.gattc_evt.conn_handle,
@@ -751,6 +900,8 @@ void ble_central_init(void)
                                      ifit_timer_cb));
     APP_ERROR_CHECK(app_timer_create(&m_policy_timer, APP_TIMER_MODE_REPEATED,
                                      policy_timer_cb));
+    APP_ERROR_CHECK(app_timer_create(&m_gattc_retry_timer, APP_TIMER_MODE_SINGLE_SHOT,
+                                     gattc_retry_cb));
 
     /* Scan module: no hardware filters — we do all classification in SW. */
     nrf_ble_scan_init_t init = {
@@ -766,8 +917,9 @@ void ble_central_init(void)
 
 void ble_central_scan_start(void)
 {
-    if (s_connecting) return;   /* a connect attempt owns the radio */
+    CRITICAL_REGION_ENTER();
 
+    if (s_connecting) goto crit_exit;
     s_ndev = 0;
     if (s_conn_handle != BLE_CONN_HANDLE_INVALID) {
         /* A connected treadmill stops advertising; seed it so the watch's
@@ -786,41 +938,51 @@ void ble_central_scan_start(void)
         NRF_LOG_WARNING("central: scan start err 0x%x", (unsigned int)err);
         s_scanning = false;
         update_link_state();
-        return;
+        goto crit_exit;
     }
     s_scanning = true;
     (void)app_timer_start(m_policy_timer, APP_TIMER_TICKS(1000), NULL);
     NRF_LOG_INFO("central: scanning for treadmills...");
     update_link_state();
+
+crit_exit:
+    CRITICAL_REGION_EXIT();
 }
 
 void ble_central_connect(int idx)
 {
+    CRITICAL_REGION_ENTER();
+
     if (idx < 0 || idx >= s_ndev) {
         NRF_LOG_WARNING("central: bad connect index %d", idx);
-        return;
+        goto crit_exit;
     }
 
-    ftms_device_t dev = s_devs[idx];
-    s_manual = dev;
+    {
+        ftms_device_t dev = s_devs[idx];
+        s_manual = dev;
 
-    if (s_conn_handle != BLE_CONN_HANDLE_INVALID) {
-        if (memcmp(s_target.addr, dev.addr, 6) == 0) return;  /* already on it */
-        /* Tear down first; DISCONNECTED sees s_have_manual and connects. */
-        s_have_manual = true;
-        (void)sd_ble_gap_disconnect(s_conn_handle,
-                                    BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
-        return;
+        if (s_conn_handle != BLE_CONN_HANDLE_INVALID) {
+            if (memcmp(s_target.addr, dev.addr, 6) == 0) goto crit_exit;
+            /* Tear down first; DISCONNECTED sees s_have_manual and connects. */
+            s_have_manual = true;
+            (void)sd_ble_gap_disconnect(s_conn_handle,
+                                        BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
+            goto crit_exit;
+        }
+        if (s_connecting) {
+            (void)sd_ble_gap_connect_cancel();
+            s_connecting = false;
+        } else {
+            s_scanning = false;
+            nrf_ble_scan_stop();
+        }
+        s_have_manual = false;
+        connect_to(&s_manual);
     }
-    if (s_connecting) {
-        (void)sd_ble_gap_connect_cancel();
-        s_connecting = false;
-    } else {
-        s_scanning = false;
-        nrf_ble_scan_stop();
-    }
-    s_have_manual = false;
-    connect_to(&s_manual);
+
+crit_exit:
+    CRITICAL_REGION_EXIT();
 }
 
 void ble_central_set_speed(float mps)
@@ -842,14 +1004,19 @@ void ble_central_set_speed(float mps)
 
 void ble_central_disconnect(void)
 {
+    CRITICAL_REGION_ENTER();
     if (s_conn_handle != BLE_CONN_HANDLE_INVALID) {
         s_have_manual = false;
         (void)sd_ble_gap_disconnect(s_conn_handle,
                                     BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
-    } else if (s_connecting) {
+        goto crit_exit;
+    }
+    if (s_connecting) {
         (void)sd_ble_gap_connect_cancel();
         s_connecting = false;
     }
+crit_exit:
+    CRITICAL_REGION_EXIT();
 }
 
 /* ---- machine.h facade implementation ----------------------------------------- */
@@ -877,7 +1044,8 @@ void machine_start_scan(void)
      * attempt first. ble_central_disconnect() already no-ops if neither
      * applies, and it clears s_connecting, so this also covers the case
      * where SCAN is pressed mid-connect (was previously silently dropped by
-     * ble_central_scan_start()'s own s_connecting guard). */
+     * ble_central_scan_start()'s own s_connecting guard).
+     * The callees each take their own CRITICAL_REGION. */
     ble_central_disconnect();
     ble_central_scan_start();
 }
@@ -891,21 +1059,26 @@ int machine_get_devices(ftms_device_t *out, int max)
 
 void machine_connect(const ftms_device_t *dev)
 {
+    int found_idx = -1;
+
+    CRITICAL_REGION_ENTER();
+
     /* Find the index in our scan list */
     for (int i = 0; i < s_ndev; i++) {
         if (memcmp(s_devs[i].addr, dev->addr, 6) == 0) {
-            ble_central_connect(i);
-            return;
+            found_idx = i;
+            goto crit_exit;
         }
     }
+
     /* Device not in scan list — connect by raw address */
     s_manual = *dev;
     if (s_conn_handle != BLE_CONN_HANDLE_INVALID) {
-        if (memcmp(s_target.addr, dev->addr, 6) == 0) return;
+        if (memcmp(s_target.addr, dev->addr, 6) == 0) goto crit_exit;
         s_have_manual = true;
         (void)sd_ble_gap_disconnect(s_conn_handle,
                                     BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
-        return;
+        goto crit_exit;
     }
     if (s_connecting) {
         (void)sd_ble_gap_connect_cancel();
@@ -916,21 +1089,35 @@ void machine_connect(const ftms_device_t *dev)
     }
     s_have_manual = false;
     connect_to(&s_manual);
+
+crit_exit:
+    CRITICAL_REGION_EXIT();
+
+    if (found_idx >= 0) ble_central_connect(found_idx);
 }
 
 void machine_try_last(void)
 {
+    int found_idx = -1;
+
+    CRITICAL_REGION_ENTER();
     if (s_have_saved) {
         /* If the saved device is in the current scan list, connect. */
         for (int i = 0; i < s_ndev; i++) {
             if (memcmp(s_devs[i].addr, s_saved.addr, 6) == 0) {
-                ble_central_connect(i);
-                return;
+                found_idx = i;
+                break;
             }
         }
         /* Not seen yet — start scanning; policy handles the wait. */
     }
-    ble_central_scan_start();
+    CRITICAL_REGION_EXIT();
+
+    if (found_idx >= 0) {
+        ble_central_connect(found_idx);
+    } else {
+        ble_central_scan_start();
+    }
 }
 
 bool machine_connected(void)

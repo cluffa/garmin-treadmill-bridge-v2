@@ -106,6 +106,18 @@ static void ble_stack_init(void)
     uint32_t ram_start = 0;
     APP_ERROR_CHECK(nrf_sdh_ble_default_cfg_set(1 /* conn_cfg_tag */,
                                                 &ram_start));
+
+    /* FIX 2: raise GATTC write-without-response queue so iFit keepalive
+     * frames (up to 7 per 500 ms tick) are not dropped.  The default
+     * queue size is 1 (BLE_GATTC_WRITE_CMD_TX_QUEUE_SIZE_DEFAULT). */
+    {
+        ble_cfg_t cfg;
+        memset(&cfg, 0, sizeof cfg);
+        cfg.conn_cfg.conn_cfg_tag = 1;  /* matches CONN_CFG_TAG */
+        cfg.conn_cfg.params.gattc_conn_cfg.write_cmd_tx_queue_size = 8;
+        APP_ERROR_CHECK(sd_ble_cfg_set(BLE_CONN_CFG_GATTC, &cfg, ram_start));
+    }
+
     APP_ERROR_CHECK(nrf_sdh_ble_enable(&ram_start));
     NRF_LOG_INFO("BLE stack enabled");
 }
@@ -169,6 +181,16 @@ int main(void)
     for (;;) {
         /* Pump USBD events (CDC ACM RX/TX callbacks fire here) */
         (void)app_usbd_event_queue_process();
+
+#if TESTBOARD
+        /* Flush the OLED framebuffer down here, NOT in the render timer.
+         * The full flush is ~23 ms of blocking I2C; in the timer callback it
+         * runs at IRQ priority 6 — the same priority as SD_EVT_IRQn — and at
+         * 5 Hz would stall BLE/ANT event dispatch ~12% of the time. The timer
+         * only marks the framebuffer dirty; this does the transfer. Without
+         * this call the display never updates. */
+        testboard_process();
+#endif
 
         if (!NRF_LOG_PROCESS()) {
             nrf_pwr_mgmt_run();
