@@ -6,6 +6,21 @@
  * downloaded release). RAM ORIGIN/LENGTH must match what the SoftDevice
  * demands for our link counts: on mismatch, ble_stack_init logs the required
  * app RAM start over RTT — copy that value here and rebuild.
+ *
+ * Flash memory map (nRF52840, 1 MB):
+ *   0x000000 - 0x000FFF   MBR (part of S340 hex)
+ *   0x001000 - 0x0305D0   SoftDevice S340 v7.0.1
+ *   0x031000 - 0x0F1FFF   Application (this firmware) — LENGTH = 0xC1000
+ *   0x0F2000 - 0x0F3FFF   FDS (2 virtual pages x 4 KB, growing down from the
+ *                         bootloader). NOTE: the page count comes from
+ *                         FDS_VIRTUAL_PAGES in app_config.h (2), which
+ *                         overrides sdk_config.h (3) — app_config.h always
+ *                         wins. Raising it there WITHOUT shrinking LENGTH
+ *                         below would let the app run into the FDS area.
+ *   0x0F4000 - 0x0FCFFF   Bootloader (Nordic Secure USB-DFU)
+ *   0x0FD000 - 0x0FDFFF   (reserved — FDS expansion or future use)
+ *   0x0FE000 - 0x0FEFFF   MBR params page
+ *   0x0FF000 - 0x0FFFFF   Bootloader settings page
  */
 
 SEARCH_DIR(.)
@@ -13,7 +28,7 @@ GROUP(-lgcc -lc -lnosys)
 
 MEMORY
 {
-  FLASH (rx) : ORIGIN = 0x31000, LENGTH = 0xcf000
+  FLASH (rx) : ORIGIN = 0x31000, LENGTH = 0xC1000
   RAM (rwx)  : ORIGIN = 0x20004000, LENGTH = 0x3c000
 }
 

@@ -249,21 +249,43 @@ TEMPLATE_PATH := $(SDK_ROOT)/components/toolchain/gcc
 include $(TEMPLATE_PATH)/Makefile.common
 $(foreach target, $(TARGETS), $(call define_target, $(target)))
 
+# ---- ANT license key dependency ---------------------------------------------
+# nrf_sdh.c consumes ANT_LICENSE_KEY from ant_license.mk via -D; force a
+# recompile when the key file appears or changes.
+_ANT_LICENSE_MK := $(wildcard ant_license.mk)
+ifneq ($(_ANT_LICENSE_MK),)
+$(OUTPUT_DIRECTORY)/nrf52840_xxaa/nrf_sdh.c.o: $(_ANT_LICENSE_MK)
+endif
+
 # ---- TESTBOARD change detection ---------------------------------------------
 # When TESTBOARD changes between builds, force a clean rebuild of all objects.
 # The $(shell) runs during Makefile parsing (before any target recipes), so
 # stale .o files are removed before the build graph is walked — no race with -j.
-TESTBOARD_STAMP := $(OUTPUT_DIRECTORY)/.testboard_stamp
+BUILD_STAMP := $(OUTPUT_DIRECTORY)/.build_stamp
 
-# Only evaluate at top-level (not during clean or help, which may not have _build)
-ifneq ($(MAKECMDGOALS),clean)
-  __tb_stale := $(shell \
-    current=$$(cat $(TESTBOARD_STAMP) 2>/dev/null || echo "none"); \
-    if [ "$$current" != "$(TESTBOARD)" ]; then \
-      echo "  TESTBOARD=$(TESTBOARD) (changed), cleaning objects" >&2; \
+# Goals that CONSUME an existing build instead of producing one. The $(shell)
+# below runs at parse time for whatever goal was named, so without this the
+# documented `make dfu` (which carries none of the canonical toolchain vars)
+# sees a changed config and deletes all 80 objects out from under the very hex
+# it is about to package — correct output, but a full recompile every time.
+NONBUILD_GOALS := clean help dfu flash-dfu settings flash-full flash-sd flash-app dfu-enter reset
+
+# Stamp only when at least one goal actually builds (bare `make` = default = build).
+ifeq ($(strip $(MAKECMDGOALS)),)
+  __do_stamp := 1
+else
+  __do_stamp := $(strip $(filter-out $(NONBUILD_GOALS),$(MAKECMDGOALS)))
+endif
+
+ifneq ($(__do_stamp),)
+  __stale := $(shell \
+    current=$$(cat $(BUILD_STAMP) 2>/dev/null || echo "none"); \
+    expected="TESTBOARD=$(TESTBOARD)|CC=$(GNU_INSTALL_ROOT)|VER=$(GNU_VERSION)"; \
+    if [ "$$current" != "$$expected" ]; then \
+      echo "  Build config changed ($$expected) — cleaning objects" >&2; \
       rm -f $(OUTPUT_DIRECTORY)/nrf52840_xxaa/*.o 2>/dev/null; \
       mkdir -p $(OUTPUT_DIRECTORY) 2>/dev/null; \
-      echo "$(TESTBOARD)" > $(TESTBOARD_STAMP); \
+      echo "$$expected" > $(BUILD_STAMP); \
     fi)
 endif
 
@@ -299,36 +321,44 @@ GPREGRET_ADDR  := 0x4000051C
 GPREGRET_DFU   := 0xB1
 
 # ---- Signed USB-DFU package (S340 v7.0.1, hw 52) ----------------------------
-dfu: $(APP_HEX)
+dfu:
+	@test -f $(APP_HEX) || { echo "ERROR: $(APP_HEX) not found — build first (see CLAUDE.md)"; exit 1; }
+	@test -f $(DFU_KEY) || { echo "ERROR: signing key $(DFU_KEY) not found. Copy dfu/dfu_private_key.pem.example or set DFU_KEY="; exit 1; }
 	@echo "  Creating DFU package..."
+	@rm -f $(DFU_ZIP)
 	$(NRFUTIL) pkg generate \
 	  --hw-version 52 --sd-req 0xCE \
 	  --application $(APP_HEX) --application-version 1 \
 	  --key-file $(DFU_KEY) \
 	  $(DFU_ZIP)
+	@test -f $(DFU_ZIP) || { echo "ERROR: nrfutil pkg generate failed — no package produced"; exit 1; }
 	@echo "  DFU package: $(DFU_ZIP)"
 
 # Push a signed package over USB to the Nordic bootloader (no SWD needed).
 # Enter DFU first with `make dfu-enter` (or an already-invalid app auto-enters).
 flash-dfu:
 	@test -n "$(SERIAL)" || { echo "ERROR: SERIAL=/dev/cu.usbmodemXXXX required (see docs/flashing.md §6)"; exit 1; }
+	@test -f $(DFU_ZIP) || { echo "ERROR: $(DFU_ZIP) not found — run 'make dfu' first"; exit 1; }
 	$(NRFUTIL) dfu usb-serial -pkg $(DFU_ZIP) -p $(SERIAL)
 
 # ---- SWD flashing via pyocd (Pico CMSIS-DAP probe) --------------------------
 # Bootloader settings page: marks the app valid so the bootloader boots it.
 # --no-backup is REQUIRED — the default backup page (0xFE000) collides with the
 # MBR params page.
-settings: $(APP_HEX)
+settings:
+	@test -f $(APP_HEX) || { echo "ERROR: $(APP_HEX) not found — build first (see CLAUDE.md)"; exit 1; }
+	@rm -f $(SETTINGS_HEX)
 	$(NRFUTIL) settings generate --family NRF52840 \
 	  --application $(APP_HEX) \
 	  --application-version 1 --bootloader-version 1 \
 	  --bl-settings-version 2 --no-backup \
 	  $(SETTINGS_HEX)
+	@test -f $(SETTINGS_HEX) || { echo "ERROR: nrfutil settings generate failed — no settings hex produced"; exit 1; }
 
 # First-time provisioning: SoftDevice + app + bootloader + settings in one
 # chip-erase pass (ERASEALL also clears UICR; the bootloader hex rewrites the
 # UICR NRFFW pointers). Makes the board bootable AND updatable over USB.
-flash-full: $(APP_HEX) settings
+flash-full: settings
 	$(PYOCD) flash -t $(PYOCD_TARGET) --erase chip \
 	  $(S340_HEX) $(APP_HEX) $(BOOTLOADER_HEX) $(SETTINGS_HEX)
 	$(PYOCD) reset -t $(PYOCD_TARGET)
@@ -340,7 +370,8 @@ flash-sd:
 # Fast app-only reflash (sector erase). NOTE: does not regenerate the settings
 # page, so a *changed* app may fail bootloader validation — re-run flash-full or
 # update via USB-DFU for a changed app. See docs/flashing.md §5.
-flash-app: $(APP_HEX)
+flash-app:
+	@test -f $(APP_HEX) || { echo "ERROR: $(APP_HEX) not found — build first (see CLAUDE.md)"; exit 1; }
 	$(PYOCD) flash -t $(PYOCD_TARGET) --erase sector $(APP_HEX)
 	$(PYOCD) reset -t $(PYOCD_TARGET)
 
