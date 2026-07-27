@@ -9,6 +9,7 @@
 
 #include "last_device.h"
 
+#include "app_timer.h"
 #include "fds.h"
 #include "nrf_log.h"
 #include "nrf_pwr_mgmt.h"
@@ -26,12 +27,15 @@ typedef union {
 
 static record_buf_t   s_buf;
 static volatile bool  s_fds_ready;
+static volatile bool  s_fds_init_signaled;  /* FDS_EVT_INIT received at all? */
+static volatile bool  s_fds_unavailable;    /* FDS permanently down */
 static volatile bool  s_write_pending;
 
 static void fds_evt_handler(const fds_evt_t *evt)
 {
     switch (evt->id) {
     case FDS_EVT_INIT:
+        s_fds_init_signaled = true;
         s_fds_ready = (evt->result == NRF_SUCCESS);
         break;
     case FDS_EVT_WRITE:
@@ -54,14 +58,42 @@ void last_device_init(void)
 {
     APP_ERROR_CHECK(fds_register(fds_evt_handler));
     APP_ERROR_CHECK(fds_init());
+
+    /* Wait up to 3 seconds for FDS to initialise.  app_timer is driven by
+     * RTC1 at 32768 Hz and is already running by the time we're called
+     * (app_timer_init() runs in main before ble_central_init).
+     * app_timer_cnt_diff_compute() handles the 24-bit counter wrap.
+     * 3 s is far longer than a normal FDS init (~tens of ms) but short
+     * enough that the user won't assume the board is dead. */
+#define LAST_DEVICE_FDS_TIMEOUT_TICKS APP_TIMER_TICKS(3000)
+    uint32_t start = app_timer_cnt_get();
     while (!s_fds_ready) {
+        if (app_timer_cnt_diff_compute(app_timer_cnt_get(), start) >=
+            LAST_DEVICE_FDS_TIMEOUT_TICKS) {
+            break;
+        }
         nrf_pwr_mgmt_run();
     }
-    NRF_LOG_INFO("last_device: fds ready");
+#undef LAST_DEVICE_FDS_TIMEOUT_TICKS
+
+    if (s_fds_ready) {
+        NRF_LOG_INFO("last_device: fds ready");
+    } else {
+        s_fds_unavailable = true;
+        if (s_fds_init_signaled) {
+            NRF_LOG_ERROR(
+                "last_device: FDS init reported error — persistence disabled");
+        } else {
+            NRF_LOG_ERROR(
+                "last_device: FDS init timed out — persistence disabled");
+        }
+    }
 }
 
 bool last_device_load(ftms_device_t *out)
 {
+    if (s_fds_unavailable) return false;
+
     fds_record_desc_t desc;
     fds_find_token_t  tok;
     memset(&tok, 0, sizeof tok);
@@ -80,6 +112,7 @@ bool last_device_load(ftms_device_t *out)
 
 void last_device_save(const ftms_device_t *d)
 {
+    if (s_fds_unavailable) return;
     if (s_write_pending) return;   /* previous save still in flight */
 
     ftms_device_t cur;
