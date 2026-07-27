@@ -24,6 +24,9 @@
 #include "nrf_drv_power.h"
 #include "nrf_drv_usbd.h"
 #include "nrf_log.h"
+#include "nrf_log_ctrl.h"
+#include "nrf_log_backend_interface.h"
+#include "nrf_log_backend_serial.h"
 
 #include "ctrl_dispatch.h"
 #include "usb_cdc_log.h"
@@ -81,6 +84,8 @@ static volatile uint32_t s_cdc_tx_drops;/* diagnostic: messages dropped    */
 static void cdc_acm_user_ev_handler(app_usbd_class_inst_t const *p_inst,
                                     app_usbd_cdc_acm_user_event_t event);
 
+static void cdc_tx_raw(const uint8_t *data, size_t len);
+
 /* ---- CDC ACM class instance ----------------------------------------------- */
 
 APP_USBD_CDC_ACM_GLOBAL_DEF(m_cdc_acm,
@@ -91,6 +96,118 @@ APP_USBD_CDC_ACM_GLOBAL_DEF(m_cdc_acm,
                             CDC_ACM_DATA_EPIN,
                             CDC_ACM_DATA_EPOUT,
                             APP_USBD_CDC_COMM_PROTOCOL_AT_V250);
+
+/* ---- TX ring helper (shared by usb_cdc_log_write + log backend) ----------- */
+
+static void cdc_tx_raw(const uint8_t *data, size_t len)
+{
+    if (len == 0) return;
+
+    /* One endpoint packet max — longer messages truncate. */
+    if (len > NRF_DRV_USBD_EPSIZE) {
+        len = NRF_DRV_USBD_EPSIZE;
+    }
+
+    /*
+     * Claim a ring slot, copy the payload, and queue the transfer.
+     *
+     * The whole sequence is inside the critical region: if another writer
+     * slipped in between a failed write and the un-claim rollback, we would
+     * rewind over its slot — exactly the corruption this ring prevents.
+     */
+    CRITICAL_REGION_ENTER();
+    if (s_cdc_tx_cnt >= CDC_TX_RING_SIZE) {
+        s_cdc_tx_drops++;
+    } else {
+        uint8_t slot = s_cdc_tx_wr;
+        char   *buf  = s_cdc_tx_ring[slot];
+
+        memcpy(buf, data, len);
+
+        s_cdc_tx_wr = (uint8_t)((s_cdc_tx_wr + 1) % CDC_TX_RING_SIZE);
+        s_cdc_tx_cnt++;
+
+        if (app_usbd_cdc_acm_write(&m_cdc_acm, buf, len) != NRF_SUCCESS) {
+            s_cdc_tx_wr = slot;
+            s_cdc_tx_cnt--;
+            s_cdc_tx_drops++;
+        }
+    }
+    CRITICAL_REGION_EXIT();
+}
+
+/* ---- NRF_LOG backend over CDC ACM ---------------------------------------- */
+
+#define CDC_LOG_BUF_SIZE 64
+
+static uint8_t s_log_buf[CDC_LOG_BUF_SIZE];
+
+static void cdc_serial_tx(void const *p_context, char const *p_buffer, size_t len)
+{
+    (void)p_context;
+    cdc_tx_raw((const uint8_t *)p_buffer, len);
+}
+
+static void cdc_log_put(nrf_log_backend_t const *p_backend,
+                        nrf_log_entry_t *p_msg)
+{
+    /*
+     * NRF_LOG_DEFERRED is 0, so this runs synchronously in whatever context
+     * called NRF_LOG_*: thread mode (main loop, cdc_tx_sink) AND IRQ priority 6
+     * (SoftDevice event handlers, app_timer callbacks). s_log_buf is a single
+     * shared formatting buffer, so a thread-mode log that gets preempted by an
+     * IRQ-context log would have its half-formatted line overwritten.
+     *
+     * Serialise the format-and-queue. Two prio-6 IRQs cannot preempt each
+     * other, so this is really about thread-vs-IRQ. The region covers only
+     * formatting one <=64 byte line plus the ring push (which nests its own
+     * critical region — supported).
+     */
+    CRITICAL_REGION_ENTER();
+    nrf_log_backend_serial_put(p_backend, p_msg, s_log_buf,
+                               CDC_LOG_BUF_SIZE, cdc_serial_tx);
+    CRITICAL_REGION_EXIT();
+}
+
+static void cdc_log_flush(nrf_log_backend_t const *p_backend)
+{
+    (void)p_backend;
+    /*
+     * USB TX is asynchronous (EasyDMA).  In normal operation the ring
+     * drains via TX_DONE events.  In panic mode USB interrupts may not
+     * fire, so spinning here would deadlock.  The backend is best-effort.
+     */
+}
+
+static void cdc_log_panic_set(nrf_log_backend_t const *p_backend)
+{
+    (void)p_backend;
+    /*
+     * USB CDC ACM cannot be reconfigured to blocking mode — all transfers
+     * go through EasyDMA.  The ring path remains non-blocking; queued
+     * log lines may never complete if USB interrupts are stopped during
+     * the panic handler.
+     */
+}
+
+static const nrf_log_backend_api_t cdc_log_backend_api = {
+    .put       = cdc_log_put,
+    .flush     = cdc_log_flush,
+    .panic_set = cdc_log_panic_set,
+};
+
+static nrf_log_backend_cb_t cdc_log_backend_cb = {
+    .enabled = false,
+    .id      = NRF_LOG_BACKEND_INVALID_ID,
+    .p_next  = NULL
+};
+
+static const nrf_log_backend_t cdc_log_backend = {
+    .p_api  = &cdc_log_backend_api,
+    .p_ctx  = NULL,
+    .p_cb   = &cdc_log_backend_cb,
+    .p_name = "cdc_log_backend"
+};
 
 /* ---- TX sink for ctrl_dispatch -------------------------------------------- */
 
@@ -246,6 +363,18 @@ void usb_cdc_log_init(void)
 
     ret = app_usbd_power_events_enable();
     APP_ERROR_CHECK(ret);
+
+    /*
+     * Register the CDC ACM NRF_LOG backend so that NRF_LOG_INFO / WARNING /
+     * ERROR calls reach USB in addition to RTT.  Registration happens after
+     * USB is initialised so that app_usbd_cdc_acm_write() is functional when
+     * the first log message arrives.
+     */
+    int32_t backend_id = nrf_log_backend_add(&cdc_log_backend,
+                                             NRF_LOG_SEVERITY_DEBUG);
+    if (backend_id >= 0) {
+        nrf_log_backend_enable(&cdc_log_backend);
+    }
 }
 
 void usb_cdc_log_write(const char *msg)
@@ -260,44 +389,18 @@ void usb_cdc_log_write(const char *msg)
         len = NRF_DRV_USBD_EPSIZE - 2;
     }
 
-    /* Claim a slot, fill it, and queue it as ONE atomic step.
-     *
-     * usb_cdc_log_write() runs in both IRQ context (app_timer -> heartbeat_cb)
-     * and thread context (cdc_tx_sink), so the two preempt each other. The
-     * whole sequence is inside the critical region rather than just the claim,
-     * because the rollback below un-claims by rewinding s_cdc_tx_wr: if another
-     * writer could slip in between the failed write and the rollback, we would
-     * rewind over *its* slot and hand the same buffer to two writers — exactly
-     * the corruption this ring exists to prevent. app_usbd_cdc_acm_write() only
-     * queues a transfer descriptor (it does not block and calls no SoftDevice
-     * API), so the region stays short.
-     *
-     * NOTE: CRITICAL_REGION_ENTER/EXIT expand to a { } block scope
-     * (app_util_platform.h, SOFTDEVICE_PRESENT) and require exactly one
-     * EXIT per ENTER in the same scope — no early returns inside. */
-    CRITICAL_REGION_ENTER();
-    if (s_cdc_tx_cnt >= CDC_TX_RING_SIZE) {
-        s_cdc_tx_drops++;                       /* ring full: drop, never block */
-    } else {
-        uint8_t slot = s_cdc_tx_wr;
-        char   *buf  = s_cdc_tx_ring[slot];
+    /*
+     * Build the CR+LF-terminated payload on the stack, then push it
+     * through cdc_tx_raw().  The double-copy is intentional — the ring
+     * buffer must own every buffer passed to app_usbd_cdc_acm_write()
+     * (EasyDMA), and stack buffers are UB there.
+     */
+    char buf[NRF_DRV_USBD_EPSIZE];
+    memcpy(buf, msg, len);
+    buf[len]     = '\r';
+    buf[len + 1] = '\n';
 
-        memcpy(buf, msg, len);
-        buf[len]     = '\r';
-        buf[len + 1] = '\n';
-
-        s_cdc_tx_wr = (uint8_t)((s_cdc_tx_wr + 1) % CDC_TX_RING_SIZE);
-        s_cdc_tx_cnt++;
-
-        /* A failed write never queued a transfer, so TX_DONE will never fire
-         * for this slot — give it straight back or the ring drains for good. */
-        if (app_usbd_cdc_acm_write(&m_cdc_acm, buf, len + 2) != NRF_SUCCESS) {
-            s_cdc_tx_wr = slot;
-            s_cdc_tx_cnt--;
-            s_cdc_tx_drops++;
-        }
-    }
-    CRITICAL_REGION_EXIT();
+    cdc_tx_raw((const uint8_t *)buf, len + 2);
 }
 
 /* ---- Weak hook (overridable by application) ------------------------------- */
