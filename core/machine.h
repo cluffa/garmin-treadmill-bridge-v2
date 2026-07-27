@@ -30,3 +30,6 @@ void machine_set_link_cb(void (*cb)(bool connected));
 bool machine_set_speed(float kmh);
 bool machine_set_incline(float pct);
 bool machine_stop(void);
+
+/* Reboot into bootloader DFU mode (sets GPREGRET and resets). */
+void machine_reboot_to_dfu(void);

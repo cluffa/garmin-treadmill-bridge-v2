@@ -108,6 +108,13 @@ static void cmd_stop(ctrl_tx_fn tx, void *ctx)
     tx(ok ? "{\"cmd\":\"stop\",\"ok\":true}" : "{\"cmd\":\"stop\",\"ok\":false}", ctx);
 }
 
+static void cmd_dfu(ctrl_tx_fn tx, void *ctx)
+{
+    tx("{\"cmd\":\"dfu\",\"ok\":true}", ctx);
+    /* machine_reboot_to_dfu() writes GPREGRET and resets — it does not return. */
+    machine_reboot_to_dfu();
+}
+
 static void cmd_status(ctrl_tx_fn tx, void *ctx)
 {
     bool conn = machine_connected();
@@ -142,6 +149,7 @@ void ctrl_dispatch(const char *line, ctrl_tx_fn tx, void *ctx)
     if (strcmp(buf, "LIST") == 0)         { cmd_list(tx, ctx); return; }
     if (strcmp(buf, "STATUS") == 0)       { cmd_status(tx, ctx); return; }
     if (strcmp(buf, "STOP") == 0)         { cmd_stop(tx, ctx); return; }
+    if (strcmp(buf, "DFU") == 0)          { cmd_dfu(tx, ctx); return; }
     if (strncmp(buf, "CONNECT ", 8) == 0) {
         char *end;
         long idx = strtol(buf + 8, &end, 10);

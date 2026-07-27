@@ -38,6 +38,7 @@ const ftms_device_t *machine_connected_device(void) { return NULL; }
 bool   machine_set_speed(float kmh) { g_last_speed = kmh; g_speed_called = true; return true; }
 bool   machine_set_incline(float pct) { (void)pct; return true; }
 bool   machine_stop(void) { return true; }
+void   machine_reboot_to_dfu(void) { /* no-op in host test */ }
 
 /* ---- capture tx output ---- */
 static char g_out[2048];
@@ -138,6 +139,11 @@ int main(void) {
     dispatch("CONNECT");
     assert(g_connect_calls == 0);
     assert(strstr(g_out, "error"));
+
+    /* DFU must produce ok=true and call the machine hook */
+    dispatch("DFU");
+    assert(strstr(g_out, "\"dfu\""));
+    assert(strstr(g_out, "\"ok\":true"));
 
     printf("ctrl_dispatch: OK\n");
     return 0;

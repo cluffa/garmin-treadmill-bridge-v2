@@ -1192,3 +1192,15 @@ bool machine_stop(void)
     }
     return cp_write(FTMS_OP_STOP, NULL, 0);
 }
+
+void machine_reboot_to_dfu(void)
+{
+    /* Write the DFU-start magic to the GPREGRET retention register,
+     * then issue a software reset. On nRF52 the SoftDevice owns the
+     * POWER peripheral so we write the register directly — the
+     * SoftDevice tolerates this for the GPREGRET/GPREGRET2 subset.
+     * SYSRESETREQ preserves GPREGRET; a POR or pin-reset would clear
+     * it and boot the app instead. */
+    *(volatile uint32_t *)0x4000051C = 0xB1;
+    NVIC_SystemReset();
+}
