@@ -5,8 +5,8 @@
 All milestones M0-M4 are code-complete, build-clean, and host-tested. Commit `fc5ac15`.
 
 - **make host-test**: 9/9 OK
-- **make -C firmware TESTBOARD=0**: DONE (82,112 bytes text)
-- **make -C firmware TESTBOARD=1**: DONE (92,248 bytes text)
+- **make -C firmware TESTBOARD=0**: DONE (~82 KB text, indicative — from commit `fc5ac15`)
+- **make -C firmware TESTBOARD=1**: DONE (~92 KB text, indicative — from commit `fc5ac15`)
 - **make dfu**: signed package produced (`--sd-req 0xCE`)
 - **Secrets**: clean; no real keys in tracked files
 
@@ -30,19 +30,19 @@ This is inherently **hardware-only** (S340 radio cannot run under Renode). No co
 
 ```sh
 make -C firmware -j8 \
-  GNU_INSTALL_ROOT=/Users/alex/.platformio/packages/toolchain-gccarmnoneeabi/bin/ \
+  GNU_INSTALL_ROOT=/path/to/arm-none-eabi-gcc/bin/ \
   GNU_VERSION=7.2.1 \
-  SDK_ROOT=/Users/alex/nRF5_SDK_17.1.0_ddde560 \
-  S340_API=/Users/alex/workspace/nrf52/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.API/include
+  SDK_ROOT=/path/to/nRF5_SDK_17.1.0_ddde560 \
+  S340_API=/path/to/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.API/include
 
 # First-time provisioning (SoftDevice + app + bootloader + settings, over SWD):
-make -C firmware flash-full
+make flash-full
 
 # Subsequent updates over USB (no SWD): build pkg, enter DFU, push it:
-make -C firmware dfu
-make -C firmware dfu-enter                          # or let an invalid app auto-enter DFU
-make -C firmware flash-dfu SERIAL=/dev/cu.usbmodemXXXX
-# Fast SWD app-only reflash: make -C firmware flash-app
+make dfu
+make dfu-enter                          # or let an invalid app auto-enter DFU
+make flash-dfu SERIAL=/dev/cu.usbmodemXXXX
+# Fast SWD app-only reflash (+ settings): make flash-app
 ```
 
 ### Step 3 — Run the Concurrency Gate

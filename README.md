@@ -58,45 +58,85 @@ make host-test
 
 Expect 9 suites, all OK.
 
+### First build on a new machine
+
+A fresh clone **cannot build** until two git-ignored files are created from
+their `.example` templates:
+
+```sh
+cp firmware/ant_network_key.h.example firmware/ant_network_key.h
+cp firmware/ant_license.mk.example   firmware/ant_license.mk
+```
+
+- `ant_network_key.h` — ANT+ network key (obtain from
+  [thisisant.com](https://www.thisisant.com)). Without it the build fails with
+  `fatal error: ant_network_key.h: No such file or directory`.
+  **The template is eight zero bytes, which builds but does not interoperate.**
+  A zero network key is not the ANT+ network, so the footpod broadcast will not
+  be recognised by a watch or any ANT+ receiver — the radio transmits and
+  nothing pairs. Paste the real key before you expect ANT+ to work; otherwise
+  the ANT leg of the concurrency gate fails in a way that looks like radio
+  contention.
+- `ant_license.mk` — ANT evaluation license key (16-byte hex, also from
+  thisisant.com) and the matching `CFLAGS` assignment. Without it
+  `sd_ant_enable()` fails at runtime.
+
+Signing DFU packages additionally requires `dfu/dfu_private_key.pem`
+(see `dfu/README.md`).
+
 ### Firmware build
 
 ```sh
 make -C firmware -j8 \
-  GNU_INSTALL_ROOT=/Users/alex/.platformio/packages/toolchain-gccarmnoneeabi/bin/ \
+  GNU_INSTALL_ROOT=/path/to/arm-none-eabi-gcc/bin/ \
   GNU_VERSION=7.2.1 \
-  SDK_ROOT=/Users/alex/nRF5_SDK_17.1.0_ddde560 \
-  S340_API=/Users/alex/workspace/nrf52/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.API/include
+  SDK_ROOT=/path/to/nRF5_SDK_17.1.0_ddde560 \
+  S340_API=/path/to/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.API/include
 ```
 
 **Toolchain note:** You MUST use PlatformIO's GCC 7.2.1 (the SDK is not
-compatible with Homebrew's `arm-none-eabi-gcc` 16). The `CLAUDE.md` file
-documents the canonical paths for all four variables.
+compatible with Homebrew's `arm-none-eabi-gcc` 16). See `CLAUDE.md` for the
+canonical variable values and this machine's concrete paths.
 
-Or use the top-level convenience target (hardwires the same paths):
+Or use the top-level convenience target (forwards `?=` defaults for all four
+variables — override with e.g. `make SDK_ROOT=/elsewhere firmware`):
 
 ```sh
 make firmware
 ```
 
-### USB-DFU loop
+### Flashing
 
-1. **Build the firmware** (as above).
-2. **Create a signed DFU package:**
-   ```sh
-   make dfu
-   ```
-   Produces `firmware/_build/app_dfu.zip` (see `dfu/README.md` for key setup).
-3. **Flash over USB** (device must be in DFU/bootloader mode):
-   ```sh
-   make flash-dfu SERIAL=/dev/cu.usbmodemXXXX
-   ```
+The XIAO nRF52840 has **no onboard debugger**. All flashing goes through
+either:
 
-### SWD fallback (nrfjprog / J-Link)
+- **SWD:** a Raspberry Pi Pico running CMSIS-DAP firmware, driven by
+  **pyOCD** (NOT `nrfjprog` / J-Link).
+- **USB:** the Nordic Secure USB-DFU bootloader, driven by **nrfutil**.
+
+The full authoritative guide (wiring, memory map, provisioning, everyday
+loops, troubleshooting) is **`docs/flashing.md`**. Quick reference:
 
 ```sh
-make flash-sd     # one-time SoftDevice flash
-make flash-app    # flash firmware via SWD
+# Build first, then flash:
+make firmware
+
+# First-time provisioning (SD+app+bootloader+settings, chip erase):
+make flash-full
+# ⚠ make flash-sd chip-erases — it wipes the bootloader, settings, and UICR.
+#   Prefer flash-full for first-time setup, flash-app for updates.
+
+# Fast app reflash over SWD (+ refreshed settings page):
+make flash-app
+
+# USB-DFU loop (build first, then):
+make dfu               # signed package → firmware/_build/app_dfu.zip
+make dfu-enter          # kick running app into DFU (needs SWD probe)
+make flash-dfu SERIAL=/dev/cu.usbmodemXXXX
 ```
+
+All flash/DFU targets **consume an existing build** — they do not rebuild.
+Build first, then flash.
 
 ## Testing layers
 
@@ -137,7 +177,7 @@ connecting/connected.
 |--------|-------------|-------|
 | ANT+ network key | `firmware/ant_network_key.h.example` | Real key must be obtained from [thisisant.com](https://www.thisisant.com) (free for personal use). The git-ignored `ant_network_key.h` is required to open the ANT SDM channel. |
 | DFU private key | `dfu/dfu_private_key.pem.example` | Generate with `nrfutil keys generate`. The matching public key (`dfu/dfu_public_key.c`) IS committed -- it is compiled into the bootloader. The private key is git-ignored. |
-| ANT eval license key | (in `firmware/Makefile`) | A 16-byte hex string passed as `-DANT_LICENSE_KEY`. The key checked in is a personal-use evaluation key from thisisant.com. A commercial release requires a licensed key. |
+| ANT eval license key | `firmware/ant_license.mk.example` | A 16-byte hex string + `CFLAGS` assignment, passed as `-DANT_LICENSE_KEY`. The key is **not** checked in — it lives in the git-ignored `firmware/ant_license.mk`. Obtain from [thisisant.com](https://www.thisisant.com). A commercial release requires a licensed key. |
 
 No real keys, tokens, or UUIDs-as-secrets are committed.
 

@@ -31,7 +31,7 @@ PASS/FAIL results there; this document is the road that gets you to a green gate
 | **USB-CDC console** (primary) | `alive N` heartbeat + all ctrl JSON replies | `screen /dev/cu.usbmodem<CHIPSERIAL>1 115200`. Also your control input. Port-mapping gotcha: `docs/flashing.md` §7. |
 | **Mock terminals** | what the *peer* sees | `mock_treadmill.py` prints CP writes; `mock_watch.py` prints decoded D/E/S frames. |
 | **OLED** (if `TESTBOARD=1`) | `app_state` render (status, speed, links) | Visual, no host needed. |
-| **`nrf_log` UART** (optional) | detailed SDK/event logs (`NRF_LOG_INFO`) | Backend = **UART**, not USB/RTT. TX = **P0.06 @ 115200** — ⚠ *shares the blue-LED pin* (`board_pins.h`), so it's a pin conflict; attach a 3.3 V USB-UART adapter to read it, or just don't rely on it. |
+| **`nrf_log` RTT + USB-CDC** (always on) | detailed SDK/event logs (`NRF_LOG_INFO`) | Backend = **RTT** (available over SWD probe) + **USB-CDC** (the same serial console you use for ctrl commands). `screen /dev/cu.usbmodem<CHIPSERIAL>1 115200` shows both logs and ctrl JSON — this is the everyday debug channel. RTT reads require a debug probe (`pyocd commander` or `JLinkRTTClient`); halting for RTT briefly breaks USB enumeration, so peek quickly. |
 | **pyocd RAM peek** | heartbeat counter, fault registers, when hung | `pyocd commander -t nrf52840 -c halt -c "read32 <addr>" -c go`. Halting breaks live USB enumeration — peek quickly, then `go`. |
 | **ANT+ receiver** | footpod (device type 124) | A Garmin watch "add sensor," an ANT+ USB stick (`openant`), or an Android ANT+ sampler app. |
 

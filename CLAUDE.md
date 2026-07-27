@@ -7,6 +7,9 @@
 make host-test
 
 # Firmware (nRF52840 + S340)
+# Build with the top-level convenience target:
+make firmware
+# Or invoke the sub-Makefile directly with explicit paths:
 make -C firmware -j8 \
   GNU_INSTALL_ROOT=/Users/alex/.platformio/packages/toolchain-gccarmnoneeabi/bin/ \
   GNU_VERSION=7.2.1 \
@@ -15,14 +18,37 @@ make -C firmware -j8 \
 
 # Flash — full procedure, wiring, and gotchas: docs/flashing.md
 # No onboard debugger: SWD via a Pico/CMSIS-DAP + pyocd (NOT nrfjprog); USB via nrfutil.
-make -C firmware flash-full                        # first-time: S340+app+bootloader+settings (SWD)
-make -C firmware flash-app                         # fast app-only reflash (SWD)
-make -C firmware dfu                               # build signed USB-DFU package
-make -C firmware dfu-enter                         # kick running app into DFU (SWD, GPREGRET)
-make -C firmware flash-dfu SERIAL=/dev/cu.usbmodemXXXX   # push package over USB
+# All flash/DFU targets CONSUME an existing build (they do not rebuild). Build first.
+make flash-full                        # first-time: SD+app+bootloader+settings, chip erase (SWD)
+make flash-app                         # fast app-only reflash + settings page (SWD)
+make flash-sd                          # SoftDevice only, chip-erases (⚠ see below)
+make dfu                               # signed USB-DFU package (consumes build)
+make dfu-enter                         # kick running app into DFU (SWD, GPREGRET)
+make flash-dfu SERIAL=/dev/cu.usbmodemXXXX   # push package over USB
 ```
 
+⚠ `make flash-sd` chip-erases (`--erase chip`): it wipes the bootloader,
+settings page, and UICR, leaving a board that is no longer USB-updatable.
+Prefer `make flash-full` for first-time provisioning.
+
+### First build on a new machine
+
+A fresh clone needs two git-ignored files before it will build:
+
+```sh
+cp firmware/ant_network_key.h.example firmware/ant_network_key.h
+cp firmware/ant_license.mk.example   firmware/ant_license.mk
+```
+
+Without `ant_network_key.h` the build fails with
+`fatal error: ant_network_key.h: No such file or directory`.
+Without `ant_license.mk`, `sd_ant_enable()` fails at runtime (the build
+completes with a warning only). Signing DFU packages additionally needs
+`dfu/dfu_private_key.pem` (see `dfu/dfu_private_key.pem.example`).
+
 ## Toolchain
+
+Paths below are this machine's concrete values — adjust to your own setup.
 
 - **Host C compiler:** cc/gcc/clang (for `core/` + `test/host/`).
 - **Firmware ARM toolchain:** PlatformIO's GCC 7.2.1 (SDK-compatible), NOT Homebrew's 16.1.0:
@@ -30,6 +56,7 @@ make -C firmware flash-dfu SERIAL=/dev/cu.usbmodemXXXX   # push package over USB
 - **nRF5 SDK 17.1.0:** `SDK_ROOT=/Users/alex/nRF5_SDK_17.1.0_ddde560`
 - **S340 v7.0.1 API headers:** `S340_API=/Users/alex/workspace/nrf52/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.API/include`
 - **S340 hex:** `/Users/alex/workspace/nrf52/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.hex` (S340 is NOT in the SDK's softdevice dir)
+- **Bootloader hex:** `/Users/alex/workspace/nrf52/build/bootloader_usb_s340.hex`
 
 ## `core/` purity invariant
 
@@ -62,6 +89,7 @@ simultaneous FTMS+iFit connections.
 ## Secrets (never committed)
 
 - `ant_network_key.h` — see `ant_network_key.h.example`.
+- `ant_license.mk` — see `ant_license.mk.example`.
 - `dfu/dfu_private_key.pem` — see `dfu/dfu_private_key.pem.example`.
 
 ## Architecture

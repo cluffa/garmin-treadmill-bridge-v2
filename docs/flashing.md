@@ -57,8 +57,8 @@ pyocd list          # should show a CMSIS-DAP probe (Raspberry Pi - Debugprobe)
 
 External artifacts live outside this repo:
 ```sh
-S340_HEX=/Users/alex/workspace/nrf52/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.hex
-BOOTLOADER_HEX=/Users/alex/workspace/nrf52/build/bootloader_usb_s340.hex
+S340_HEX=/path/to/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.hex
+BOOTLOADER_HEX=/path/to/bootloader_usb_s340.hex
 ```
 In-repo build outputs (after a `make` build):
 ```sh
@@ -77,10 +77,10 @@ USB: SoftDevice + app + bootloader + settings, in one chip-erase pass.
 ### 4a. Build the app
 ```sh
 make -C firmware -j8 \
-  GNU_INSTALL_ROOT=/Users/alex/.platformio/packages/toolchain-gccarmnoneeabi/bin/ \
+  GNU_INSTALL_ROOT=/path/to/arm-none-eabi-gcc/bin/ \
   GNU_VERSION=7.2.1 \
-  SDK_ROOT=/Users/alex/nRF5_SDK_17.1.0_ddde560 \
-  S340_API=/Users/alex/workspace/nrf52/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.API/include \
+  SDK_ROOT=/path/to/nRF5_SDK_17.1.0_ddde560 \
+  S340_API=/path/to/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.API/include \
   TESTBOARD=1        # TESTBOARD=1 adds the OLED/LED/buzzer/button test aid; 0 for production
 ```
 
@@ -134,11 +134,11 @@ make -C firmware flash-app         # wraps the pyocd command below
 pyocd flash -t nrf52840 --erase sector firmware/_build/nrf52840_xxaa.hex
 pyocd reset -t nrf52840
 ```
-> Note: a raw app reflash does **not** regenerate the bootloader settings page.
-> The settings CRC still matches the previously-provisioned app, so the
-> bootloader may refuse to boot a *changed* app. For a changed app either
-> re-run the settings + `flash-full` step (§4), or update via USB-DFU (§6),
-> which refreshes the settings page for you.
+> Note: `flash-app` now regenerates and flashes the **settings page**
+> alongside the app, so it is idempotent and safe to repeat — a changed app
+> always gets a matching validation CRC, and the bootloader boots it reliably.
+> (Earlier versions of this target did not carry the settings page, which
+> could leave the bootloader refusing to start a changed app.)
 
 ---
 
@@ -228,8 +228,11 @@ ioreg -p IOUSB -l -w 0 | grep -E '"USB Product Name"|"USB Serial Number"'
   **cable/port** problem (marginal USB-C cable or host controller), not firmware:
   Nordic's own bootloader failed identically until we swapped cable/port. Try a
   known-good data cable and a direct port.
-- **App won't boot after a raw SWD app reflash** — the settings-page CRC no longer
-  matches the changed app. Re-provision (§4) or update via USB-DFU (§6).
+- **App won't boot after a flash** — the settings-page CRC may not match
+  the app (e.g. after a raw pyocd flash that skipped the settings page).
+  `make flash-app` carries both app and settings; if you flashed the hex
+  directly without the settings page, re-run `make flash-app` or
+  re-provision (§4). The USB-DFU path (§6) also refreshes the settings page.
 - **DFU rejects the package** — check `--sd-req 0xCE` (S340 v7.0.1) and that the
   signing key matches the bootloader's embedded public key.
 - **Reading RAM/RTT over SWD requires a halt**, which breaks live USB enumeration.
