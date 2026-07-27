@@ -52,3 +52,20 @@ void workout_ctrl_tick(void);
 /* Drop any latched command (e.g. on watch disconnect) so the keepalive stops
  * re-asserting a stale target. */
 void workout_ctrl_reset(void);
+
+/* Action kinds for workout_ctrl_note_manual. These are this header's own
+ * public constants — workout_ctrl.c translates them to the internal
+ * action_kind_t explicitly, so they are deliberately NOT required to track
+ * that enum's values. */
+#define WORKOUT_CTRL_ACT_SPEED 1
+#define WORKOUT_CTRL_ACT_STOP  2
+
+/* Record a manual control command (from the watch's SPEED/STOP ctrl-svc
+ * grammar) as workout_ctrl's own state so the keepalive re-asserts the
+ * *manual* value rather than the last workout-step target. Without this,
+ * cmd_stop()/cmd_speed() in ctrl_dispatch update the machine directly but
+ * workout_ctrl_tick() still re-issues the stale workout speed ~30 s later.
+ *
+ * For ACT_STOP, kmh is ignored; the keepalive will not re-assert anything.
+ * For ACT_SPEED, kmh becomes the new keepalive value. */
+void workout_ctrl_note_manual(int kind, float kmh);

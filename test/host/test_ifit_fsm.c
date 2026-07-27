@@ -97,6 +97,44 @@ int main(void)
     for (int i = 0; i < 6; i++) tick();
     assert(nframes == 1);                     /* rejected, nothing injected */
 
+    /* Stop cancels a pending belt start: belt stopped, request speed (start
+     * goes pending in phase 2), call stop, tick to phase 5 — no START_SEQ.
+     * Regression: stop only cleared s_req_speed, not s_req_start, so the
+     * 5-frame START_SEQ fired ~1.5 s after the stop command. */
+    ifit_fsm_reset();
+    for (int i = 0; i < 18; i++) tick();      /* skip init */
+    ifit_fsm_note_speed(0);                    /* belt stopped */
+    ifit_fsm_request_speed(8.0f);
+    tick();  /* phase 0 */
+    tick();  /* phase 1 */
+    tick();  /* phase 2: start becomes pending, no ctrl frame */
+    assert(nframes == 1 && frames[0][0] == 0xff);
+    ifit_fsm_request_stop();                   /* belt-safety: must cancel pending start */
+    tick();  /* phase 3 */
+    tick();  /* phase 4 */
+    tick();  /* phase 5: must NOT emit START_SEQ */
+    assert(nframes == 1);                      /* poll frame only, no START_01 */
+    /* Explicitly verify the START_01 magic is absent from every frame. */
+    {
+        const uint8_t start01[4] = {0xfe, 0x02, 0x20, 0x03};
+        for (int i = 0; i < nframes; i++) {
+            assert(!(frame_len[i] >= 4 && memcmp(frames[i], start01, 4) == 0));
+        }
+    }
+
+    /* Incline sentinel aliasing: REQ_INCLINE_NONE == -100.0, so requesting
+     * exactly -100 % should be rejected rather than silently swallowed. */
+    ifit_fsm_reset();
+    for (int i = 0; i < 18; i++) tick();
+    ifit_fsm_request_incline(-100.0f);         /* aliases sentinel: must be rejected */
+    ifit_fsm_note_speed(8.0f);
+    for (int i = 0; i < 6; i++) tick();        /* full poll cycle */
+    assert(nframes == 1);                      /* phase 2: nothing injected */
+    /* Values below the sentinel are also rejected. */
+    ifit_fsm_request_incline(-200.0f);
+    for (int i = 0; i < 6; i++) tick();
+    assert(nframes == 1);
+
     /* reset() restarts the init sequence. */
     ifit_fsm_reset();
     tick();

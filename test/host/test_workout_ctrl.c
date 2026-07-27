@@ -138,6 +138,39 @@ int main(void)
     workout_ctrl_on_frame(f, sizeof f);
     assert(g_stop_calls == 1);
 
+    /* ---- FIX 2: manual STOP during active workout must latch the stop so
+     * the keepalive does NOT re-assert the old speed. ---- */
+    reset_counts();
+    workout_ctrl_reset();
+    /* Start an active speed via workout frame. */
+    frame(f, TIMER_ON, true, TGT_SPEED, 2778, 2778);
+    workout_ctrl_on_frame(f, sizeof f);
+    assert(g_speed_calls == 1 && g_last_speed > 9.9f);
+    /* User manually presses STOP on the watch app. */
+    reset_counts();
+    workout_ctrl_note_manual(WORKOUT_CTRL_ACT_STOP, 0);
+    /* Tick well past KEEPALIVE_TICKS — belt MUST stay stopped. */
+    for (int i = 0; i < 40; i++) workout_ctrl_tick();
+    assert(g_speed_calls == 0 && g_stop_calls == 0);
+
+    /* ---- FIX 2: manual SPEED during active workout latches the new speed
+     * so the keepalive re-asserts the MANUAL value, not the workout target. ---- */
+    reset_counts();
+    workout_ctrl_reset();
+    frame(f, TIMER_ON, true, TGT_SPEED, 2778, 2778);   /* workout wants 10 km/h */
+    workout_ctrl_on_frame(f, sizeof f);
+    assert(g_speed_calls == 1);
+    /* User manually sets 7.0 km/h via the watch app.
+     * note_manual() only latches the state (the caller, cmd_speed, already
+     * issued machine_set_speed). The keepalive must re-assert the manual value. */
+    reset_counts();
+    workout_ctrl_note_manual(WORKOUT_CTRL_ACT_SPEED, 7.0f);
+    assert(g_speed_calls == 0);   /* note_manual does NOT issue — cmd_speed did */
+    /* Keepalive must re-assert the manual 7.0, not the workout's 10.0. */
+    for (int i = 0; i < 30; i++) workout_ctrl_tick();
+    assert(g_speed_calls == 1);
+    assert(g_last_speed > 6.9f && g_last_speed < 7.1f);
+
     printf("workout_ctrl: OK\n");
     return 0;
 }

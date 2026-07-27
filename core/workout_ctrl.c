@@ -108,3 +108,20 @@ void workout_ctrl_reset(void)
     s_last_kmh  = 0.0f;
     s_ka_ticks  = 0;
 }
+
+/* Record a manual command from ctrl_dispatch so the keepalive re-asserts the
+ * *manual* value, not the last workout-step target.  The caller has already
+ * issued the command to the machine; we just update internal state. */
+void workout_ctrl_note_manual(int kind, float kmh)
+{
+    if (kind == WORKOUT_CTRL_ACT_STOP) {
+        s_last_kind = ACT_STOP;
+        s_ka_ticks  = 0;
+    } else if (kind == WORKOUT_CTRL_ACT_SPEED) {
+        s_last_kind = ACT_SPEED;
+        s_last_kmh  = kmh;
+        s_ka_ticks  = 0;
+    }
+    /* WORKOUT_CTRL_ACT_NONE (0) is a no-op — used if the caller just wants
+     * to reset the keepalive without changing the latched command. */
+}

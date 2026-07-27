@@ -99,8 +99,21 @@ void ifit_fsm_request_speed(float kmh)
     s_req_speed = kmh;
 }
 
-void ifit_fsm_request_incline(float pct) { s_req_incline = pct; }
-void ifit_fsm_request_stop(void)         { ifit_fsm_request_speed(0); }
+void ifit_fsm_request_incline(float pct)
+{
+    /* Reject the sentinel value: -100 aliases REQ_INCLINE_NONE and is
+     * silently swallowed (same class of bug as the old speed sentinel). */
+    if (pct <= REQ_INCLINE_NONE) return;
+    s_req_incline = pct;
+}
+void ifit_fsm_request_stop(void)
+{
+    /* Belt-safety: cancel any pending START_SEQ.  Without this, a stop
+     * issued in the phase-2 to phase-5 window still fires the 5-frame
+     * belt-start sequence ~1.5 s after the user commanded a stop. */
+    s_req_start = 0;
+    ifit_fsm_request_speed(0);
+}
 void ifit_fsm_note_speed(float kmh)      { s_cur_speed_kmh = kmh; }
 
 /* NordicTrack 6.5S speed/incline control frame: kind = 0x01 speed / 0x02

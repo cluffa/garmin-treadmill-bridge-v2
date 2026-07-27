@@ -1,6 +1,7 @@
 #include "ctrl_dispatch.h"
 #include "machine.h"
 #include "ftms_devlist.h"
+#include "workout_ctrl.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -42,14 +43,24 @@ static void cmd_list(ctrl_tx_fn tx, void *ctx)
     int n = machine_get_devices(devs, FTMS_MAX_DEVICES);
     char buf[512];
     int pos = snprintf(buf, sizeof buf, "{\"cmd\":\"list\",\"devices\":[");
-    for (int i = 0; i < n && pos < (int)sizeof(buf) - 80; i++) {
+    for (int i = 0; i < n; i++) {
         const char *proto = devs[i].proto == MACHINE_PROTO_IFIT ? "iFit" : "FTMS";
         char name[FTMS_NAME_LEN * 2];
         json_escape(name, sizeof name, devs[i].name);
-        pos += snprintf(buf + pos, sizeof(buf) - pos,
-                        "%s{\"idx\":%d,\"name\":\"%s\",\"proto\":\"%s\",\"rssi\":%d}",
-                        i ? "," : "", i, name, proto, devs[i].rssi);
+        int w = snprintf(buf + pos, sizeof(buf) - pos,
+                         "%s{\"idx\":%d,\"name\":\"%s\",\"proto\":\"%s\",\"rssi\":%d}",
+                         i ? "," : "", i, name, proto, devs[i].rssi);
+        /* snprintf returns what it WOULD have written, not what it wrote.
+         * If the return exceeds the space remaining -- less the 2 bytes the
+         * closing "]}" still needs -- this entry was truncated; drop it and
+         * stop, rather than letting pos drift past the end of the buffer.
+         * Reserving the 2 bytes here (rather than clamping pos afterwards)
+         * is what keeps the output valid JSON: a clamp could cut the last
+         * complete entry mid-token. */
+        if (w < 0 || w >= (int)sizeof(buf) - pos - 2) break;
+        pos += w;
     }
+    /* pos is now <= sizeof(buf) - 3, so "]}" plus its NUL always fits. */
     snprintf(buf + pos, sizeof(buf) - pos, "]}");
     tx(buf, ctx);
 }
@@ -69,6 +80,9 @@ static void cmd_connect(int idx, ctrl_tx_fn tx, void *ctx)
 static void cmd_speed(float kmh, ctrl_tx_fn tx, void *ctx)
 {
     bool ok = machine_set_speed(kmh);
+    /* Latch the manual speed so the keepalive re-asserts THIS value,
+     * not the last workout-step target. */
+    if (ok) workout_ctrl_note_manual(WORKOUT_CTRL_ACT_SPEED, kmh);
     char buf[64];
     snprintf(buf, sizeof buf, "{\"cmd\":\"speed\",\"ok\":%s}", ok ? "true" : "false");
     tx(buf, ctx);
@@ -85,6 +99,12 @@ static void cmd_incline(float pct, ctrl_tx_fn tx, void *ctx)
 static void cmd_stop(ctrl_tx_fn tx, void *ctx)
 {
     bool ok = machine_stop();
+    /* Latch the manual stop so workout_ctrl_tick() does NOT re-assert a stale
+     * workout speed ~30 s later. Latched on INTENT, not on success: if the
+     * stop failed the belt may still be moving, and re-commanding the old
+     * workout speed is the last thing we want to do to someone who just
+     * asked for a stop. */
+    workout_ctrl_note_manual(WORKOUT_CTRL_ACT_STOP, 0);
     tx(ok ? "{\"cmd\":\"stop\",\"ok\":true}" : "{\"cmd\":\"stop\",\"ok\":false}", ctx);
 }
 
@@ -122,7 +142,17 @@ void ctrl_dispatch(const char *line, ctrl_tx_fn tx, void *ctx)
     if (strcmp(buf, "LIST") == 0)         { cmd_list(tx, ctx); return; }
     if (strcmp(buf, "STATUS") == 0)       { cmd_status(tx, ctx); return; }
     if (strcmp(buf, "STOP") == 0)         { cmd_stop(tx, ctx); return; }
-    if (strncmp(buf, "CONNECT ", 8) == 0) { cmd_connect(atoi(buf + 8), tx, ctx); return; }
+    if (strncmp(buf, "CONNECT ", 8) == 0) {
+        char *end;
+        long idx = strtol(buf + 8, &end, 10);
+        while (*end == ' ') end++;
+        if (end == buf + 8 || *end != '\0') {
+            tx("{\"cmd\":\"connect\",\"ok\":false,\"err\":\"bad value\"}", ctx);
+            return;
+        }
+        cmd_connect((int)idx, tx, ctx);
+        return;
+    }
     if (strncmp(buf, "SPEED ", 6) == 0) {
         float v;
         if (parse_float(buf + 6, &v)) cmd_speed(v, tx, ctx);
