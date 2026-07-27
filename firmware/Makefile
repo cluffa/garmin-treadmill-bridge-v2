@@ -367,12 +367,13 @@ flash-full: settings
 flash-sd:
 	$(PYOCD) flash -t $(PYOCD_TARGET) --erase chip $(S340_HEX)
 
-# Fast app-only reflash (sector erase). NOTE: does not regenerate the settings
-# page, so a *changed* app may fail bootloader validation — re-run flash-full or
-# update via USB-DFU for a changed app. See docs/flashing.md §5.
-flash-app:
-	@test -f $(APP_HEX) || { echo "ERROR: $(APP_HEX) not found — build first (see CLAUDE.md)"; exit 1; }
-	$(PYOCD) flash -t $(PYOCD_TARGET) --erase sector $(APP_HEX)
+# Fast app-only reflash (sector erase). Regenerates and flashes the settings
+# page alongside the app: the settings page holds the app's validation CRC, so
+# flashing a *changed* app without it leaves a stale CRC and the bootloader can
+# refuse to start the image. Carrying both makes this idempotent and safe to
+# repeat. See docs/flashing.md §5.
+flash-app: settings
+	$(PYOCD) flash -t $(PYOCD_TARGET) --erase sector $(APP_HEX) $(SETTINGS_HEX)
 	$(PYOCD) reset -t $(PYOCD_TARGET)
 
 # Kick the running app into the DFU bootloader over SWD: set GPREGRET magic and

@@ -161,6 +161,28 @@ D/E/S frames), `0004` write (raw 15-byte workout telemetry → `workout_ctrl`).
 Advertises RSC `0x1814`-free; carries the A6ED 128-bit UUID in the scan response
 so CIQ can find it. Single peripheral link (`NRF_SDH_BLE_PERIPHERAL_LINK_COUNT=1`).
 
+#### Link security: none, and that is a deliberate decision
+
+Every characteristic is `BLE_GAP_CONN_SEC_MODE_SET_OPEN`. There is no pairing,
+no bonding and no whitelist, so **any BLE central in radio range can connect and
+write `A6ED0002`/`A6ED0004`** — i.e. command belt speed, or inject a synthetic
+workout frame. That is the full extent of the exposure: the device holds no
+credentials and stores nothing but the last treadmill's address.
+
+Accepted, on these grounds:
+- It is a single-user personal device, used in a home, within BLE range (~10 m).
+- The treadmill's own physical stop always wins; the belt is never left
+  unattended in normal use.
+- Just Works pairing is the only pairing mode Garmin Connect IQ can drive, and
+  it buys no meaningful protection against a co-located attacker anyway — it
+  stops passive eavesdropping, which is not the threat here.
+- Requiring pairing risks breaking the CIQ app's ability to connect at all, for
+  a threat model that does not justify it.
+
+Revisit this if the device is ever used somewhere with untrusted people in
+radio range (a gym, a shared building), or if it gains any capability beyond
+belt speed and incline. Reviewed and accepted 2026-07-27.
+
 ### `usb_cdc_log` — probe-free console
 USB-CDC ACM: `NRF_LOG` backend + an interactive line reader wired to
 `ctrl_dispatch` (SCAN/LIST/CONNECT/SPEED/STOP/STATUS). This is the everyday
