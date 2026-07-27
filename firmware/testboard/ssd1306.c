@@ -14,7 +14,6 @@
  */
 
 #include "ssd1306.h"
-#include "app_error.h"
 #include "board_pins.h"
 #include "nrf_delay.h"
 #include "nrf_drv_twi.h"
@@ -24,6 +23,18 @@
 /* ---- I2C instance ----------------------------------------------------------- */
 #define TWI_INSTANCE_ID 0
 static const nrf_drv_twi_t s_twi = NRF_DRV_TWI_INSTANCE(TWI_INSTANCE_ID);
+
+/* ---- Fault tracking -------------------------------------------------------- */
+/*
+ * If the OLED is absent, unpowered, or NACKs, nrf_drv_twi_tx errors must NOT
+ * reset the chip (APP_ERROR_CHECK). Instead we log the first few failures,
+ * then disable further rendering so a dead display costs nothing and stops
+ * spamming the log. Consecutive failures are tracked; a single success resets
+ * the counter so a transiently failing display can recover.
+ */
+#define SSD1306_MAX_CONSECUTIVE_FAILS 4
+static uint32_t s_fail_count;
+static bool     s_dead;  /* true when display is known-unreachable */
 
 /* ---- Framebuffer ------------------------------------------------------------ */
 #define SSD1306_WIDTH   128
@@ -133,10 +144,31 @@ static const uint8_t font5x7[95][5] = {
 
 /* ---- I2C helper: send command byte to SSD1306 ------------------------------- */
 
+static bool ssd1306_twi_tx_safe(const uint8_t *data, uint16_t len)
+{
+    if (s_dead) return false;
+
+    ret_code_t err = nrf_drv_twi_tx(&s_twi, 0x3C, data, len, false);
+    if (err == NRF_SUCCESS) {
+        s_fail_count = 0;
+        return true;
+    }
+
+    s_fail_count++;
+    if (s_fail_count == 1) {
+        NRF_LOG_WARNING("ssd1306: TWI tx error 0x%x", (unsigned int)err);
+    } else if (s_fail_count >= SSD1306_MAX_CONSECUTIVE_FAILS && !s_dead) {
+        NRF_LOG_ERROR("ssd1306: %u consecutive TWI failures — disabling display",
+                      (unsigned int)s_fail_count);
+        s_dead = true;
+    }
+    return false;
+}
+
 static void ssd1306_write_cmd(uint8_t cmd)
 {
     uint8_t buf[2] = { 0x00, cmd };  /* Co=0, D/C#=0 → command */
-    APP_ERROR_CHECK(nrf_drv_twi_tx(&s_twi, 0x3C, buf, 2, false));
+    (void)ssd1306_twi_tx_safe(buf, 2);
 }
 
 /* ---- I2C helper: send data to SSD1306 (framebuffer or init bytes) ------------ */
@@ -162,7 +194,9 @@ static void ssd1306_write_data(const uint8_t *data, uint16_t len)
         buf[0] = 0x40;  /* Co=0, D/C#=1 → data */
         memcpy(&buf[1], data, chunk);
 
-        APP_ERROR_CHECK(nrf_drv_twi_tx(&s_twi, 0x3C, buf, chunk + 1, false));
+        if (!ssd1306_twi_tx_safe(buf, chunk + 1)) {
+            return;  /* display unreachable — stop wasting time */
+        }
         data += chunk;
         len  -= chunk;
     }
@@ -181,7 +215,15 @@ void ssd1306_init(void)
         .clear_bus_init     = false,
         .hold_bus_uninit    = false,
     };
-    APP_ERROR_CHECK(nrf_drv_twi_init(&s_twi, &twi_cfg, NULL, NULL));
+    {
+        ret_code_t err = nrf_drv_twi_init(&s_twi, &twi_cfg, NULL, NULL);
+        if (err != NRF_SUCCESS) {
+            NRF_LOG_ERROR("ssd1306: TWI init error 0x%x — display disabled",
+                          (unsigned int)err);
+            s_dead = true;
+            return;
+        }
+    }
     nrf_drv_twi_enable(&s_twi);
 
     /* ---- SSD1306 init sequence (from datasheet) ----------------------------- */
@@ -254,6 +296,7 @@ void ssd1306_clear(void)
 
 void ssd1306_text(uint8_t col, uint8_t row, const char *text)
 {
+    if (s_dead) return;
     if (row >= SSD1306_PAGES) return;
 
     uint8_t *page = s_fb[row];
@@ -281,6 +324,8 @@ void ssd1306_text(uint8_t col, uint8_t row, const char *text)
 
 void ssd1306_show(void)
 {
+    if (s_dead) return;
+
     /*
      * Send the entire framebuffer to the GDDRAM.
      * SSD1306 auto-increments column pointers within each page.

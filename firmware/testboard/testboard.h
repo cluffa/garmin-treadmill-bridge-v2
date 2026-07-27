@@ -25,8 +25,20 @@ extern "C" {
 void testboard_init(void);
 
 /* Called at ~5 Hz from an app_timer. Composes OLED lines from app_state(),
- * updates the status LED, and chirps the buzzer on state transitions. */
+ * updates the status LED, and chirps the buzzer on state transitions.
+ *
+ * IMPORTANT: this runs at IRQ priority 6 (same as SD_EVT_IRQn) — it must
+ * NOT do blocking I2C. The OLED framebuffer is composed here but the actual
+ * hardware flush is deferred to testboard_process(). */
 void testboard_render_tick(void);
+
+/*
+ * Called from the main loop (not IRQ context). Flushes the OLED framebuffer
+ * to hardware via blocking I2C when a render tick has marked it dirty.
+ * Must be polled regularly; if not called the display will not update but
+ * the device will not crash or hang.
+ */
+void testboard_process(void);
 
 /*
  * Weak radio-action stubs that M3 (ble_central) will override with real

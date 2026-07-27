@@ -42,6 +42,7 @@
 
 #include "testboard.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -76,6 +77,16 @@ static link_state_t s_prev_link  = LINK_DOWN;
 static bool         s_prev_watch = false;
 static bool         s_prev_ant   = false;
 static uint32_t     s_prev_fault = 0;
+
+/* ---- Deferred I2C flush flag ---------------------------------------------- *
+ *
+ * The OLED flush (~23 ms of blocking I2C at 400 kHz) must NOT run inside the
+ * render timer callback (IRQ priority 6, same as SD_EVT_IRQn). At 5 Hz that
+ * stalls all BLE/ANT event dispatch ~12% of the time, making three-radio
+ * concurrency tests flaky. Instead the callback only sets this flag;
+ * testboard_process() (called from the main loop) does the actual I2C flush.
+ */
+static volatile bool s_render_pending;
 
 /* ---- Render timer ---------------------------------------------------------- */
 APP_TIMER_DEF(s_render_timer);
@@ -188,6 +199,21 @@ static void on_button_long(void)
     NVIC_SystemReset();
 }
 
+/* ---- Deferred main-loop flush -------------------------------------------- */
+
+/* Called from the main loop (not from IRQ). When a render tick has flagged
+ * the framebuffer dirty, this executes the blocking I2C flush down here
+ * where it does not stall BLE/ANT event dispatch.
+ *
+ * This function must be called periodically from main(). If it is not called,
+ * the OLED will never update (but the device will not crash or hang). */
+void testboard_process(void)
+{
+    if (!s_render_pending) return;
+    s_render_pending = false;
+    ssd1306_show();
+}
+
 /* ---- Initialisation -------------------------------------------------------- */
 
 void testboard_init(void)
@@ -259,6 +285,60 @@ static const char *action_label(test_action_t a)
     }
 }
 
+/* ---- Format speed as integer tenths (avoids _printf_float) --------------- *
+ *
+ * newlib-nano without -u _printf_float cannot format %%f — the output is
+ * empty or garbage. We convert m/s to km/h tenths with integer arithmetic
+ * and format as "%%d.%%d", right-aligned to a 6-char field matching the
+ * visual layout of %%6.1f. Negative values (which should not occur) print a
+ * leading minus sign.
+ */
+static void format_speed_kmh(char *buf, size_t bufsz, float mps)
+{
+    /* Convert m/s to tenths of km/h: mps * 3.6 * 10 = mps * 36.
+     * Round away from zero so negative numbers round toward -inf.
+     * Clamp first: a float->int cast is undefined when the value exceeds
+     * INT_MAX, and this renders whatever telemetry hands us. 1000 km/h is
+     * already absurd for a treadmill, so anything past it is garbage. */
+    if (!(mps > -278.0f)) mps = -278.0f;   /* also catches NaN */
+    if (mps > 278.0f)     mps = 278.0f;
+
+    int tenths;
+    if (mps >= 0.0f) {
+        tenths = (int)(mps * 36.0f + 0.5f);
+    } else {
+        tenths = (int)(mps * 36.0f - 0.5f);
+    }
+
+    bool neg = (tenths < 0);
+    unsigned int abs_tenths = neg ? (unsigned int)(-tenths) : (unsigned int)tenths;
+    unsigned int whole = abs_tenths / 10;
+    unsigned int frac  = abs_tenths % 10;
+
+    /* Build value portion (e.g. "8.0", "-0.5", "12.3").
+     * snprintf returns the length it WOULD have written, so for an absurd
+     * speed (garbage telemetry) adding it raw would push vpos past val[] and
+     * the copy loop below would read out of bounds. Take the truncated
+     * length that was actually written instead. */
+    char val[8];
+    int vpos = 0;
+    if (neg) val[vpos++] = '-';
+    (void)snprintf(val + vpos, sizeof(val) - vpos, "%u.%u", whole, frac);
+    vpos = (int)strlen(val);
+
+    /* Right-align into a 6-char field */
+    int len = vpos;
+    int pad = 6 - len;
+    int pos = 0;
+    for (int i = 0; i < pad && pos < (int)bufsz - 1; i++) {
+        buf[pos++] = ' ';
+    }
+    for (int i = 0; i < len && pos < (int)bufsz - 1; i++) {
+        buf[pos++] = val[i];
+    }
+    buf[pos] = '\0';
+}
+
 /* ---- Render tick callback ------------------------------------------------- */
 
 static void render_tick_cb(void *ctx)
@@ -303,13 +383,21 @@ static void render_tick_cb(void *ctx)
     ssd1306_text(0, 0, line);
 
     /* Row 1: belt speed */
-    snprintf(line, sizeof(line), "Belt:%6.1f km/h",
-             (double)st->treadmill.speed_mps * 3.6);
+    memcpy(line, "Belt:", 5);
+    format_speed_kmh(line + 5, sizeof(line) - 5, st->treadmill.speed_mps);
+    {
+        size_t n = strlen(line);
+        snprintf(line + n, sizeof(line) - n, " km/h");
+    }
     ssd1306_text(0, 1, line);
 
     /* Row 2: resolved target speed */
-    snprintf(line, sizeof(line), "Targ:%6.1f km/h",
-             (double)st->resolved_target_mps * 3.6);
+    memcpy(line, "Targ:", 5);
+    format_speed_kmh(line + 5, sizeof(line) - 5, st->resolved_target_mps);
+    {
+        size_t n = strlen(line);
+        snprintf(line + n, sizeof(line) - n, " km/h");
+    }
     ssd1306_text(0, 2, line);
 
     /* Row 3: current test action */
@@ -326,5 +414,6 @@ static void render_tick_cb(void *ctx)
     /* Row 6–7: spare */
     ssd1306_text(0, 6, "");
 
-    ssd1306_show();
+    /* Schedule deferred flush (must NOT run blocking I2C in IRQ context). */
+    s_render_pending = true;
 }
