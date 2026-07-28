@@ -203,7 +203,43 @@ Now confirmed working on hardware: `s_twi_ready = 1` (so `ssd1306_twi_start()`
 actually ran and succeeded), `s_dead = 0`, `s_fail_count = 0` — the panel is
 ACKing on I2C at address 0x3C.
 
-### NRF_LOG re-entrancy into `app_usbd` (uncommitted, `firmware/app_config.h`)
+### Unanswered BLE Data Length Update — the ctrl service was unusable (`9fac29b`)
+
+Any modern central could connect to the ctrl service and then never finish GATT
+service discovery; macOS gave up after ~10 s and hung up. On the host this
+looked like an opaque `TimeoutError` from bleak; on the device, a connect
+immediately followed by a disconnect.
+
+`BLE_GAP_EVT_DATA_LENGTH_UPDATE_REQUEST` (0x23) was arriving and nothing
+answered it. The peer opens a link-layer Data Length Update and waits; until
+`sd_ble_gap_data_length_update()` replies, the procedure stays open and ATT is
+stalled, so discovery cannot proceed. `PHY_UPDATE_REQUEST` was handled, its
+sibling was not — the SDK's `nrf_ble_gatt` module normally answers both, and
+this firmware deliberately does not link it.
+
+The event trace (`DIAG_BLE_EVT_TRACE=1`) made it unambiguous:
+
+```
+before:  0x10 CONNECTED  0x21 PHY_REQ  0x22 PHY  0x23 DLE_REQ  0x11 DISCONNECTED (0x13)
+after:   0x10  0x21  0x22  0x23  0x24 DLE_DONE  0x55 MTU_REQ  0x50 WRITE -> notifications on
+                     0x50 WRITE -> rx "SCAN" -> central: scanning -> {"cmd":"scan","ok":true}
+```
+
+No `0x24` and no `0x55` before the fix: discovery never got past the stall.
+
+**Fixed on the central link too**, which had the identical gap. Any treadmill
+that requests DLE — most modern ones do — would have stalled discovery the same
+way. That is the core product path and would have presented as "the bridge
+won't talk to my treadmill" with nothing in the logs to explain it.
+
+Two diagnostics kept: the HCI disconnect reason and negotiated connection
+parameters are now logged (the reason code is the whole diagnosis when a link
+drops, and its absence cost several round trips), and `DIAG_BLE_EVT_TRACE`
+(default 0) in `firmware/Makefile`. Leave the tracer off unless hunting a
+stalled link-layer procedure: with the central scanning it emits an
+`ADV_REPORT` line per advertisement and floods the RTT ring.
+
+### NRF_LOG re-entrancy into `app_usbd` (`ca8af2f`, `firmware/app_config.h`)
 
 `NRF_LOG_DEFERRED` was `0`, so every `NRF_LOG_*` dequeued **synchronously** into
 the backends at the call site — and the CDC backend's `put()` ends in
@@ -236,7 +272,7 @@ filled at `ant_sdm init` and the RTT backend's non-blocking *skip* mode
 silently discarded everything after it — which is why the USB events and the
 original fatal error were invisible for so long.
 
-### `s_dead` latch in `ssd1306.c` (uncommitted)
+### `s_dead` latch in `ssd1306.c` (`dff39d5`)
 
 `edb62f5` replaced `APP_ERROR_CHECK(nrf_drv_twi_tx(...))` with a fault counter,
 but `s_dead` was set in two places and **never cleared anywhere**. Its commit
