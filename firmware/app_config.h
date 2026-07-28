@@ -48,20 +48,31 @@
 #define NRF_SDH_ANT_OBSERVER_PRIO_LEVELS 2
 #define NRF_SDH_ANT_STACK_OBSERVER_PRIO 0
 
-/* ---- clock: XIAO nominally has a 32.768 kHz crystal, but this board's   ---- */
-/* ---- LFXO does not oscillate (EVENTS_LFCLKSTARTED never fires).          ---- */
-/* ---- Fall back to internal RC until the hardware is fixed.               ---- */
-/* ---- TODO: revert to XTAL (=1) once the crystal is confirmed working.   ---- */
-#define NRF_SDH_CLOCK_LF_SRC 0        /* RC (was XTAL=1; crystal not oscillating) */
-#define NRF_SDH_CLOCK_LF_RC_CTIV 16
-#define NRF_SDH_CLOCK_LF_RC_TEMP_CTIV 2
-#define NRF_SDH_CLOCK_LF_ACCURACY 1   /* 500 ppm (RC) */
+/* ---- clock: 32.768 kHz LFXO ------------------------------------------------
+ *
+ * The XIAO's LFXO works. The earlier "crystal does not oscillate" finding was a
+ * measurement error: it polled EVENTS_LFCLKSTARTED (0x40000104), a self-clearing
+ * one-shot latch that the SDH clock handler clears once serviced, rather than
+ * LFCLKSTAT.STATE (0x40000418 bit 16). Verify with LFCLKSTAT, which must read
+ * SRC=1 (Xtal), STATE=1 (Running) -> 0x00010001.
+ *
+ * XTAL matters here beyond tidiness: LF accuracy sets BLE connection-event and
+ * ANT channel timing margin, and this device runs BLE peripheral + BLE central
+ * + ANT master concurrently. 500 ppm (RC) vs 20 ppm (XTAL) is the difference
+ * between comfortable and marginal in that three-radio window.
+ *
+ * The RC_CTIV values below are retained but inert (the SoftDevice only uses
+ * them when LF_SRC is RC), so falling back is a one-line change. */
+#define NRF_SDH_CLOCK_LF_SRC 1        /* XTAL */
+#define NRF_SDH_CLOCK_LF_RC_CTIV 0    /* must be 0 for XTAL */
+#define NRF_SDH_CLOCK_LF_RC_TEMP_CTIV 0
+#define NRF_SDH_CLOCK_LF_ACCURACY 7   /* NRF_CLOCK_LF_ACCURACY_20_PPM */
 
 /* ---- clock driver (app_timer LFCLK request; SDH takes over once SD is up) - */
 #define NRFX_CLOCK_ENABLED 1
 #define NRF_CLOCK_ENABLED 1                  /* legacy nrf_drv_clock alias */
-#define NRFX_CLOCK_CONFIG_LF_SRC 0           /* RC, matches NRF_SDH_CLOCK_LF_SRC */
-#define CLOCK_CONFIG_LF_SRC 0
+#define NRFX_CLOCK_CONFIG_LF_SRC 1           /* XTAL, matches NRF_SDH_CLOCK_LF_SRC */
+#define CLOCK_CONFIG_LF_SRC 1
 #define NRFX_CLOCK_CONFIG_IRQ_PRIORITY 6
 #define CLOCK_CONFIG_IRQ_PRIORITY 6
 #define NRFX_CLOCK_CONFIG_LF_CAL_ENABLED 0
@@ -81,7 +92,24 @@
 /* ---- logging over SEGGER RTT ---------------------------------------------- */
 #define NRF_LOG_ENABLED 1
 #define NRF_LOG_DEFAULT_LEVEL 3              /* info */
-#define NRF_LOG_DEFERRED 0
+/* Deferred logging is REQUIRED, not a preference. With NRF_LOG_DEFERRED 0 every
+ * NRF_LOG_* call dequeues synchronously into the backends at the call site —
+ * and the CDC backend's put() calls app_usbd_cdc_acm_write(). usbd_user_ev_handler()
+ * logs from inside app_usbd's own event callbacks (APP_USBD_EVT_POWER_DETECTED,
+ * POWER_READY, STARTED), so the backend re-entered app_usbd mid-dispatch —
+ * before app_usbd_enable()/app_usbd_start() had even run, and with interrupts
+ * masked by cdc_tx_raw()'s critical region. Enumeration never got past the
+ * device/string descriptors. Deferring moves the backend write out to
+ * NRF_LOG_PROCESS() in the main loop, which breaks the re-entrancy. */
+#define NRF_LOG_DEFERRED 1
+#define NRF_LOG_BUFSIZE 2048   /* boot logs a lot before the main loop drains it */
+
+/* The RTT up-buffer is the only console on this board (USB CDC is broken), and
+ * the SDK backend runs it in non-blocking SKIP mode: once full with nothing
+ * draining it, every later message is silently discarded. At the 512-byte
+ * default the boot log filled at "ant_sdm init" and everything after it — the
+ * USB state-machine events, and any fatal error — was invisible. */
+#define SEGGER_RTT_CONFIG_BUFFER_SIZE_UP 4096
 #define NRF_LOG_BACKEND_RTT_ENABLED 1
 #define NRF_LOG_BACKEND_UART_ENABLED 0
 #define NRF_LOG_STR_PUSH_BUFFER_SIZE 128
