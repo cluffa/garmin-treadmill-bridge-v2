@@ -53,6 +53,12 @@ static const ble_uuid128_t IFIT_BASE = {{
     0x23,0xd1,0xbc,0xea,0x5f,0x78,0x23,0x15,
     0xde,0xef,0x12,0x14,0x00,0x00,0x00,0x00}};
 
+/* FTMS 0x1826 on the Bluetooth base UUID (00001826-0000-1000-8000-00805F9B34FB),
+ * little-endian, for matching 128-bit advert lists. */
+static const uint8_t FTMS_SVC_RAW[16] = {
+    0xFB,0x34,0x9B,0x5F,0x80,0x00,0x00,0x80,
+    0x00,0x10,0x00,0x00,0x26,0x18,0x00,0x00};
+
 /* Raw 16-byte iFit service UUID (LE) for matching 128-bit advert lists. */
 static const uint8_t IFIT_SVC_RAW[16] = {
     0x23,0xd1,0xbc,0xea,0x5f,0x78,0x23,0x15,
@@ -138,7 +144,10 @@ static bool adv_has_uuid16(const uint8_t *data, uint8_t data_len, uint16_t want)
     return false;
 }
 
-static bool adv_has_ifit(const uint8_t *data, uint8_t len)
+/* Match a full 128-bit UUID in AD type 0x06/0x07 (the incomplete/complete list
+ * of 128-bit service UUIDs). */
+static bool adv_has_uuid128(const uint8_t *data, uint8_t len,
+                            const uint8_t uuid[16])
 {
     uint8_t i = 0;
     while (i < len) {
@@ -147,11 +156,28 @@ static bool adv_has_ifit(const uint8_t *data, uint8_t len)
         uint8_t t = data[i + 1];
         if (t == 0x06 || t == 0x07) {
             for (uint8_t j = 2; j + 16 <= (uint16_t)l + 1; j += 16)
-                if (memcmp(&data[i + j], IFIT_SVC_RAW, 16) == 0) return true;
+                if (memcmp(&data[i + j], uuid, 16) == 0) return true;
         }
         i += (uint8_t)(l + 1);
     }
     return false;
+}
+
+static bool adv_has_ifit(const uint8_t *data, uint8_t len)
+{
+    return adv_has_uuid128(data, len, IFIT_SVC_RAW);
+}
+
+/* A SIG-assigned service may legally be advertised in full 128-bit form rather
+ * than collapsed into the 16-bit list, so both have to be accepted. macOS
+ * CoreBluetooth does exactly this: a peripheral advertising FTMS puts
+ * FB 34 9B 5F 80 00 00 80 00 10 00 00 26 18 00 00 in AD type 0x06/0x07 and
+ * nothing at all in 0x02/0x03. Matching only 16-bit made every such treadmill
+ * invisible — it never reached the device list, with no error anywhere. */
+static bool adv_has_ftms(const uint8_t *data, uint8_t len)
+{
+    return adv_has_uuid16(data, len, FTMS_SVC_UUID) ||
+           adv_has_uuid128(data, len, FTMS_SVC_RAW);
 }
 
 static void adv_name(const uint8_t *data, uint8_t len, char *out, int outlen)
@@ -661,8 +687,7 @@ static void on_adv_report(const ble_gap_evt_adv_report_t *r)
     int proto = -1;
     if (adv_has_ifit(r->data.p_data, (uint8_t)r->data.len)) {
         proto = MACHINE_PROTO_IFIT;
-    } else if (adv_has_uuid16(r->data.p_data, (uint8_t)r->data.len,
-                              FTMS_SVC_UUID)) {
+    } else if (adv_has_ftms(r->data.p_data, (uint8_t)r->data.len)) {
         proto = MACHINE_PROTO_FTMS;
     }
 
