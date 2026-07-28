@@ -2,11 +2,19 @@
 
 ## State
 
-Branch `fix/code-review-2026-07-27`, 14 commits. `main` and `origin/main`
-untouched (`origin/main` still at `e68a403` — nothing pushed).
+Branch `fix/code-review-2026-07-27`, 19 commits, **working tree clean**.
+`main` and `origin/main` untouched (`origin/main` still at `e68a403` — nothing
+pushed).
 
-**Uncommitted working-tree changes:** `firmware/testboard/ssd1306.c` (s_dead
-backoff fix) and this file.
+**M4.2 concurrency gate is in progress and going well.** Check A1 (BLE
+peripheral ctrl link) **PASSES**: a host central connects, subscribes, and its
+`SCAN` command is received and dispatched — with ANT broadcasting and the BLE
+central scanning at the same time, i.e. all three radios live concurrently.
+Check A4 (ANT master, device type 124) passed independently when a real Garmin
+watch paired to footpod #45694. **A2, A3 and A5 still to run**, and they need
+`mock_treadmill.py` running — it had not started in earlier attempts because
+macOS blocks Bluetooth for a process with no controlling terminal, so run the
+mocks from a real terminal and accept the permission prompt.
 
 **The board boots and runs.** It was never defective. The boot failure had a
 single root cause (missing bootloader → FDS could not allocate flash pages),
@@ -24,7 +32,7 @@ Gates: `make host-test` 9/9; firmware links clean with `-Werror` for both
 Hardware: XIAO nRF52840 + Pico CMSIS-DAP probe (GP2→SWCLK, GP3→SWDIO,
 GND→GND). SWD is reliable.
 
-**Only remaining blocker: USB CDC never completes enumeration** (see "Still
+**Remaining known defect: USB CDC never completes enumeration** (see "Still
 open").
 
 ---
