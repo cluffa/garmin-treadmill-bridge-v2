@@ -48,17 +48,20 @@
 #define NRF_SDH_ANT_OBSERVER_PRIO_LEVELS 2
 #define NRF_SDH_ANT_STACK_OBSERVER_PRIO 0
 
-/* ---- clock: XIAO has a 32.768 kHz crystal -------------------------------- */
-#define NRF_SDH_CLOCK_LF_SRC 1        /* XTAL */
-#define NRF_SDH_CLOCK_LF_RC_CTIV 0
-#define NRF_SDH_CLOCK_LF_RC_TEMP_CTIV 0
-#define NRF_SDH_CLOCK_LF_ACCURACY 7   /* 20 ppm */
+/* ---- clock: XIAO nominally has a 32.768 kHz crystal, but this board's   ---- */
+/* ---- LFXO does not oscillate (EVENTS_LFCLKSTARTED never fires).          ---- */
+/* ---- Fall back to internal RC until the hardware is fixed.               ---- */
+/* ---- TODO: revert to XTAL (=1) once the crystal is confirmed working.   ---- */
+#define NRF_SDH_CLOCK_LF_SRC 0        /* RC (was XTAL=1; crystal not oscillating) */
+#define NRF_SDH_CLOCK_LF_RC_CTIV 16
+#define NRF_SDH_CLOCK_LF_RC_TEMP_CTIV 2
+#define NRF_SDH_CLOCK_LF_ACCURACY 1   /* 500 ppm (RC) */
 
 /* ---- clock driver (app_timer LFCLK request; SDH takes over once SD is up) - */
 #define NRFX_CLOCK_ENABLED 1
 #define NRF_CLOCK_ENABLED 1                  /* legacy nrf_drv_clock alias */
-#define NRFX_CLOCK_CONFIG_LF_SRC 1           /* XTAL, matches NRF_SDH_CLOCK_LF_SRC */
-#define CLOCK_CONFIG_LF_SRC 1
+#define NRFX_CLOCK_CONFIG_LF_SRC 0           /* RC, matches NRF_SDH_CLOCK_LF_SRC */
+#define CLOCK_CONFIG_LF_SRC 0
 #define NRFX_CLOCK_CONFIG_IRQ_PRIORITY 6
 #define CLOCK_CONFIG_IRQ_PRIORITY 6
 #define NRFX_CLOCK_CONFIG_LF_CAL_ENABLED 0
