@@ -12,10 +12,32 @@ architecture.
 
 ## Prerequisites
 
-- [ ] XIAO nRF52840 flashed with the latest `firmware/_build/nrf52840_xxaa.hex`
-- [ ] S340 SoftDevice pre-flashed (`make flash-sd` completed at least once)
-- [ ] USB-CDC console visible (`screen /dev/cu.usbmodemXXXX 115200` or similar)
-- [ ] ANT network key provisioned (`firmware/ant_network_key.h` exists with real key)
+Status as of 2026-07-27:
+
+- [x] XIAO nRF52840 flashed with the latest `firmware/_build/nrf52840_xxaa.hex`
+      — `make flash-full TESTBOARD=1`, boots clean, heartbeat steady at 1 Hz.
+- [x] S340 SoftDevice pre-flashed — v7.0.1; both stacks report enabled
+      (`BLE stack enabled`, `ANT stack enabled`).
+      **Do NOT use `make flash-sd`**: it chip-erases the bootloader and UICR
+      and is what broke this board earlier. `make flash-full` covers it.
+- [ ] ~~USB-CDC console~~ **UNAVAILABLE — USB enumeration is broken**
+      (see `docs/HANDOFF.md`). The device serves descriptors but exposes zero
+      interfaces, so there is no `/dev/cu.usbmodem*` for it and `screen` is not
+      an option. **Use RTT over the SWD probe instead** — it is strictly better
+      for this test anyway, and is how every diagnosis this session was made:
+      ```sh
+      nm -S firmware/_build/nrf52840_xxaa.out | grep _acUpBuffer   # e.g. 2000592c
+      pyocd commander -t nrf52840 -O connect_mode=attach -c "read8 0x2000592c 2048"
+      ```
+      ⚠ Use read-only commands. Do **not** `halt` the core while the SoftDevice
+      is running — it trips an SD assert and the board dies a few seconds later,
+      which will read as a concurrency failure that isn't one.
+- [x] ANT network key provisioned — real key in place (git-ignored), and a real
+      Garmin watch pairs and connects to footpod #45694 (device type 124,
+      Stride SDM). This means Check A4 is already proven independently.
+- [x] LF clock on the 32.768 kHz crystal (`LFCLKSTAT = 0x00010001`, SRC:Xtal),
+      20 ppm rather than the RC's 500 ppm. Relevant here: LF accuracy sets the
+      BLE connection-event and ANT channel timing margin this gate is testing.
 
 ## Part A -- Mocks (all three radios confirmed on-device)
 
