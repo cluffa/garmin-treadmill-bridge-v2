@@ -141,10 +141,17 @@ def decode(frame: bytes) -> str:
     if tag == "E" and len(frame) >= 2:
         return f"E count={frame[1]}"
     if tag == "S" and len(frame) >= 3:
-        proto = "iFit" if frame[2] else "FTMS"
         name = frame[3:].split(b"\0")[0].decode(errors="replace")
-        state = "connected" if frame[1] else "disconnected"
-        return f"S {state} proto={proto} name={name!r}"
+        if not frame[1]:
+            # proto/name are undefined on a disconnect: ble_ctrl_svc.c's
+            # send_status_frame() has no device to read and sends
+            # `dev ? dev->proto : 0`, and MACHINE_PROTO_FTMS is 0 — so rendering
+            # it printed "disconnected proto=FTMS" after an iFit link dropped,
+            # which reads as the bridge flip-flopping between protocols when it
+            # is really one machine failing repeatedly. Don't show the field.
+            return "S disconnected"
+        proto = "iFit" if frame[2] else "FTMS"
+        return f"S connected proto={proto} name={name!r}"
     return f"? {frame.hex()}"
 
 

@@ -103,7 +103,15 @@ async def main():
         Perm.readable | Perm.writeable,
     )
 
-    await server.start()
+    # prioritize_local_name=False is REQUIRED, not a preference. bless defaults it
+    # to True, and with it set it drops every service UUID from the advertisement
+    # when the local name is longer than 10 characters (bless corebluetooth
+    # server.py: `if (prioritize_local_name) and len(self.name) > 10`).
+    # "MockTreadmill" is 13, so the default advertises the name and NO FTMS UUID
+    # at all — the bridge scans for 0x1826 in AD type 0x02/0x03, finds nothing,
+    # and the mock never appears in LIST. Silent and very confusing: the mock
+    # prints "advertising" and is genuinely on air, just not as a treadmill.
+    await server.start(prioritize_local_name=False)
     print("MockTreadmill advertising -- FTMS 0x1826 / TD 0x2ACD / CP 0x2AD9")
     print("Speed ramps to 12 km/h; use SPEED command from bridge to override.")
 
