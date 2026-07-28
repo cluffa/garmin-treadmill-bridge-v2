@@ -30,11 +30,27 @@ static const nrf_drv_twi_t s_twi = NRF_DRV_TWI_INSTANCE(TWI_INSTANCE_ID);
  * reset the chip (APP_ERROR_CHECK). Instead we log the first few failures,
  * then disable further rendering so a dead display costs nothing and stops
  * spamming the log. Consecutive failures are tracked; a single success resets
- * the counter so a transiently failing display can recover.
+ * the counter.
+ *
+ * That mute is a BACKOFF, not a latch. s_dead used to be set and never cleared
+ * anywhere, so a single NACK burst — e.g. the panel NACKing during its own
+ * ~100 ms power-up, before its VCC is stable — killed the display until the
+ * next reboot. ssd1306_show() now clears the fault and re-runs the bring-up
+ * every SSD1306_RETRY_FLUSHES flushes, so a panel that comes back is picked up
+ * on its own. The bring-up must be re-run, not just the framebuffer dump: a
+ * display that lost power has also lost its configuration registers.
  */
 #define SSD1306_MAX_CONSECUTIVE_FAILS 4
+
+/* ssd1306_show() is driven from the main loop at the render tick rate (5 Hz),
+ * so 50 skipped flushes is a ~10 s backoff: slow enough that a genuinely absent
+ * panel costs almost nothing, fast enough to recover without a reboot. */
+#define SSD1306_RETRY_FLUSHES 50
+
 static uint32_t s_fail_count;
-static bool     s_dead;  /* true when display is known-unreachable */
+static bool     s_dead;        /* display unreachable — retried after a backoff */
+static bool     s_twi_ready;   /* nrf_drv_twi_init() has succeeded */
+static uint32_t s_retry_skips; /* flushes skipped since the fault latched */
 
 /* ---- Framebuffer ------------------------------------------------------------ */
 #define SSD1306_WIDTH   128
@@ -204,9 +220,14 @@ static void ssd1306_write_data(const uint8_t *data, uint16_t len)
 
 /* ---- Initialisation --------------------------------------------------------- */
 
-void ssd1306_init(void)
+/* ---- I2C (nrf_drv_twi) bring-up ---------------------------------------------
+ *
+ * Idempotent, so the recovery path can call it without tracking whether the
+ * peripheral survived the fault. */
+static bool ssd1306_twi_start(void)
 {
-    /* ---- I2C (nrf_drv_twi) ------------------------------------------------- */
+    if (s_twi_ready) return true;
+
     nrf_drv_twi_config_t twi_cfg = {
         .scl                = PIN_I2C_SCL,
         .sda                = PIN_I2C_SDA,
@@ -215,19 +236,28 @@ void ssd1306_init(void)
         .clear_bus_init     = false,
         .hold_bus_uninit    = false,
     };
-    {
-        ret_code_t err = nrf_drv_twi_init(&s_twi, &twi_cfg, NULL, NULL);
-        if (err != NRF_SUCCESS) {
-            NRF_LOG_ERROR("ssd1306: TWI init error 0x%x — display disabled",
-                          (unsigned int)err);
-            s_dead = true;
-            return;
-        }
+
+    ret_code_t err = nrf_drv_twi_init(&s_twi, &twi_cfg, NULL, NULL);
+    /* INVALID_STATE means this instance is already initialised, which for our
+     * purposes is success — don't disable the display over it. */
+    if (err != NRF_SUCCESS && err != NRF_ERROR_INVALID_STATE) {
+        NRF_LOG_ERROR("ssd1306: TWI init error 0x%x — display disabled",
+                      (unsigned int)err);
+        s_dead = true;
+        return false;
     }
+
     nrf_drv_twi_enable(&s_twi);
+    s_twi_ready = true;
+    return true;
+}
 
-    /* ---- SSD1306 init sequence (from datasheet) ----------------------------- */
-
+/* ---- SSD1306 init sequence (from datasheet) ---------------------------------
+ *
+ * Also the recovery path, so it must not assume anything about the panel's
+ * current register state. */
+static void ssd1306_panel_init(void)
+{
     nrf_delay_ms(10);  /* wait for VDD stabilise */
 
     /* Display off */
@@ -282,6 +312,13 @@ void ssd1306_init(void)
 
     /* Display on */
     ssd1306_write_cmd(0xAF);
+}
+
+void ssd1306_init(void)
+{
+    if (!ssd1306_twi_start()) return;
+
+    ssd1306_panel_init();
 
     /* Clear framebuffer */
     ssd1306_clear();
@@ -296,7 +333,9 @@ void ssd1306_clear(void)
 
 void ssd1306_text(uint8_t col, uint8_t row, const char *text)
 {
-    if (s_dead) return;
+    /* Deliberately NOT gated on s_dead: this only writes the RAM framebuffer,
+     * which costs nothing while the panel is unreachable and leaves valid
+     * content ready to go out the instant it recovers. */
     if (row >= SSD1306_PAGES) return;
 
     uint8_t *page = s_fb[row];
@@ -324,7 +363,26 @@ void ssd1306_text(uint8_t col, uint8_t row, const char *text)
 
 void ssd1306_show(void)
 {
-    if (s_dead) return;
+    if (s_dead) {
+        /* Backoff, not a latch: skip most flushes, then retry the bring-up.
+         * A panel that was absent or unpowered has lost its configuration, so
+         * re-sending the framebuffer alone would not bring it back — the whole
+         * init sequence has to go out again. If it is still gone, the write
+         * helper re-arms s_dead within SSD1306_MAX_CONSECUTIVE_FAILS commands
+         * and we back off for another interval. */
+        if (++s_retry_skips < SSD1306_RETRY_FLUSHES) return;
+        s_retry_skips = 0;
+
+        s_dead       = false;
+        s_fail_count = 0;
+        NRF_LOG_INFO("ssd1306: retrying display");
+
+        if (!ssd1306_twi_start()) return;  /* re-armed s_dead */
+        ssd1306_panel_init();
+        if (s_dead) return;                /* still unreachable */
+
+        NRF_LOG_INFO("ssd1306: display recovered");
+    }
 
     /*
      * Send the entire framebuffer to the GDDRAM.
