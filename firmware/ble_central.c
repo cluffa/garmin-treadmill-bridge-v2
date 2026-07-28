@@ -666,6 +666,23 @@ static void on_adv_report(const ble_gap_evt_adv_report_t *r)
         proto = MACHINE_PROTO_FTMS;
     }
 
+#if DIAG_ADV_DUMP
+    /* Dump the raw advertisement of anything LOUDER than the threshold, so a
+     * nearby device that fails to classify can be read AD-structure by AD
+     * structure. Gated on RSSI rather than name because a device whose local
+     * name is absent (or lives only in a scan response we never request, since
+     * we scan passively) would be filtered out by a name test — which is
+     * exactly the case we need to see. proto -1 means neither matcher fired:
+     * compare what is actually on air against adv_has_uuid16()'s expectation
+     * of AD type 0x02/0x03 carrying 0x1826. */
+    if (r->rssi >= DIAG_ADV_DUMP_MIN_RSSI) {
+        NRF_LOG_INFO("adv rssi=%d len=%u proto=%d name=\"%s\"",
+                     (int)r->rssi, (unsigned int)r->data.len, proto,
+                     nrf_log_push(name));
+        NRF_LOG_HEXDUMP_INFO(r->data.p_data, r->data.len);
+    }
+#endif
+
     if (proto >= 0) {
         ftms_device_t dev;
         memset(&dev, 0, sizeof dev);
@@ -701,6 +718,26 @@ static void ble_evt_handler(const ble_evt_t *p_evt, void *p_ctx)
     const ble_gap_evt_t *gap = &p_evt->evt.gap_evt;
 
     switch (p_evt->header.evt_id) {
+    case BLE_GAP_EVT_ADV_REPORT:
+        /* Classify here rather than from nrf_ble_scan's event handler.
+         *
+         * With NRF_BLE_SCAN_FILTER_ENABLE 0 — which is what we want, since we
+         * classify FTMS/iFit in software — nrf_ble_scan NEVER notifies the
+         * application at all. In nrf_ble_scan_on_adv_report() the call to
+         * p_scan_ctx->evt_handler() sits inside the big
+         * `#if (NRF_BLE_SCAN_FILTER_ENABLE == 1)` block; with filters off the
+         * function only re-arms the scan. So scan_evt_handler() never fired,
+         * on_adv_report() never ran, and LIST was permanently empty — no
+         * treadmill, real or mock, could ever be discovered.
+         *
+         * The SoftDevice delivers BLE_GAP_EVT_ADV_REPORT to every BLE observer
+         * regardless, so taking it directly is both simpler and immune to that
+         * module's configuration. nrf_ble_scan still resumes scanning on its
+         * own observer, which is the one part of it that works with filters
+         * disabled. */
+        on_adv_report(&gap->params.adv_report);
+        break;
+
     case BLE_GAP_EVT_CONNECTED:
         if (gap->params.connected.role != BLE_GAP_ROLE_CENTRAL) break;
         /* ONE-CONNECTION invariant: the single central link slot enforces
