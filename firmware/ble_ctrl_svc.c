@@ -206,6 +206,12 @@ static void ble_evt_handler(const ble_evt_t *p_evt, void *p_ctx)
     (void)p_ctx;
     const ble_gap_evt_t *gap = &p_evt->evt.gap_evt;
 
+#if DIAG_BLE_EVT_TRACE
+    /* TEMPORARY: trace every BLE event so a stalled GATT service discovery can
+     * be seen directly instead of inferred. Drain the RTT buffer first. */
+    NRF_LOG_INFO("evt 0x%02x", (unsigned int)p_evt->header.evt_id);
+#endif
+
     switch (p_evt->header.evt_id) {
     case BLE_GAP_EVT_CONNECTED:
         if (gap->params.connected.role != BLE_GAP_ROLE_PERIPH) break;
@@ -213,7 +219,15 @@ static void ble_evt_handler(const ble_evt_t *p_evt, void *p_ctx)
         s_notify_on = false;
         s_txq_head = s_txq_tail = 0;
         app_state()->watch_connected = true;
-        NRF_LOG_INFO("ctrl_svc: watch connected (handle %u)", s_conn_handle);
+        /* Log the negotiated parameters, not just the fact of a connection: a
+         * link that establishes and immediately drops is usually explained by
+         * the interval/timeout the peer actually granted. Intervals are in
+         * 1.25 ms units, supervision timeout in 10 ms units. */
+        NRF_LOG_INFO("ctrl_svc: watch connected (handle %u) int=%u lat=%u sup=%u",
+                     s_conn_handle,
+                     (unsigned int)gap->params.connected.conn_params.max_conn_interval,
+                     (unsigned int)gap->params.connected.conn_params.slave_latency,
+                     (unsigned int)gap->params.connected.conn_params.conn_sup_timeout);
         break;
 
     case BLE_GAP_EVT_DISCONNECTED:
@@ -222,7 +236,15 @@ static void ble_evt_handler(const ble_evt_t *p_evt, void *p_ctx)
         s_notify_on = false;
         app_state()->watch_connected = false;
         workout_ctrl_reset();   /* stop re-asserting a stale target */
-        NRF_LOG_INFO("ctrl_svc: watch disconnected — re-advertising");
+        /* The HCI reason is the whole diagnosis when a link drops. Common ones:
+         * 0x08 CONNECTION_TIMEOUT (supervision timeout — link went quiet),
+         * 0x13 REMOTE_USER_TERMINATED (the peer hung up deliberately),
+         * 0x3B CONN_INTERVAL_UNACCEPTABLE, 0x22 LMP_RESPONSE_TIMEOUT,
+         * 0x3E CONN_FAILED_TO_BE_ESTABLISHED (the connection request was seen
+         * but the link never properly formed — the signature of radio
+         * contention, which on this device means ANT/BLE timeslot pressure). */
+        NRF_LOG_INFO("ctrl_svc: watch disconnected (reason 0x%02x) — re-advertising",
+                     (unsigned int)gap->params.disconnected.reason);
         ble_ctrl_svc_advertise_start();
         break;
 
@@ -268,6 +290,24 @@ static void ble_evt_handler(const ble_evt_t *p_evt, void *p_ctx)
                                 &gap->params.conn_param_update_request.conn_params);
             if (err != NRF_SUCCESS) {
                 NRF_LOG_WARNING("ctrl_svc: conn param update reply err 0x%x",
+                                (unsigned int)err);
+            }
+        }
+        break;
+
+    case BLE_GAP_EVT_DATA_LENGTH_UPDATE_REQUEST:
+        /* MUST be answered. The peer opens a link-layer Data Length Update and
+         * waits; until sd_ble_gap_data_length_update() replies, the procedure
+         * stays open and ATT is stalled — so the central's GATT service
+         * discovery never completes and it eventually hangs up (HCI 0x13).
+         * The SDK's nrf_ble_gatt module normally answers this, and this
+         * firmware deliberately does not link it, so nobody else will.
+         * NULL params = let the SoftDevice pick the largest mutually
+         * supported PDU. */
+        if (gap->conn_handle == s_conn_handle) {
+            uint32_t err = sd_ble_gap_data_length_update(s_conn_handle, NULL, NULL);
+            if (err != NRF_SUCCESS) {
+                NRF_LOG_WARNING("ctrl_svc: data length update err 0x%x",
                                 (unsigned int)err);
             }
         }

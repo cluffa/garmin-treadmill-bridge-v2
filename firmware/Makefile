@@ -14,6 +14,9 @@
 
 TESTBOARD ?= 1
 
+# Temporary diagnostic: trace every BLE event (see docs/HANDOFF.md). 0 = off.
+DIAG_BLE_EVT_TRACE ?= 0
+
 PROJECT_NAME     := garmin_ant_bridge
 TARGETS          := nrf52840_xxaa
 OUTPUT_DIRECTORY := _build
@@ -211,6 +214,7 @@ CFLAGS += -DNRF_SD_BLE_API_VERSION=7
 CFLAGS += -DUSE_APP_CONFIG
 CFLAGS += -DAPP_TIMER_V2 -DAPP_TIMER_V2_RTC1_ENABLED
 CFLAGS += -DTESTBOARD=$(TESTBOARD)
+CFLAGS += -DDIAG_BLE_EVT_TRACE=$(DIAG_BLE_EVT_TRACE)
 # ANT SoftDevice evaluation license key (nrf_sdm.h) — personal use only; a
 # commercial release requires a license from thisisant.com. The key is tied to
 # a developer account, so it lives in the git-ignored ant_license.mk (copy

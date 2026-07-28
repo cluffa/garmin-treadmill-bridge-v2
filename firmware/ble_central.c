@@ -778,6 +778,21 @@ static void ble_evt_handler(const ble_evt_t *p_evt, void *p_ctx)
         }
         break;
 
+    case BLE_GAP_EVT_DATA_LENGTH_UPDATE_REQUEST:
+        /* Same requirement as on the peripheral link (see ble_ctrl_svc.c): an
+         * unanswered Data Length Update leaves the procedure open and stalls
+         * ATT, so discovery against the treadmill would never complete. A
+         * treadmill that requests DLE would hang exactly the way the macOS
+         * central did. NULL params = SoftDevice picks the best mutual PDU. */
+        if (gap->conn_handle == s_conn_handle) {
+            uint32_t err = sd_ble_gap_data_length_update(gap->conn_handle, NULL, NULL);
+            if (err != NRF_SUCCESS) {
+                NRF_LOG_WARNING("central: data length update err 0x%x",
+                                (unsigned int)err);
+            }
+        }
+        break;
+
     case BLE_GAP_EVT_PHY_UPDATE_REQUEST:
         if (gap->conn_handle == s_conn_handle) {
             ble_gap_phys_t phys = {
