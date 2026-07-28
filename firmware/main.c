@@ -50,7 +50,14 @@ static void heartbeat_cb(void *ctx)
     (void)ctx;
     unsigned int n = (unsigned int)s_heartbeat_cnt++;
 
-    NRF_LOG_INFO("alive %u", n);
+    /* Every 10th tick, not every one. RTT is the only console on this board and
+     * its backend drops rather than wraps once the buffer is full, so a 1 Hz
+     * heartbeat buried every interesting event: a scan/connect sequence a
+     * couple of minutes into a session was silently discarded before it could
+     * be read. Precise liveness comes from s_heartbeat_cnt in RAM anyway. */
+    if ((n % 10u) == 0u) {
+        NRF_LOG_INFO("alive %u", n);
+    }
 
     /* ~1 Hz control keepalive: re-assert the resolved target speed if a write
      * to the treadmill was lost. The watch only sends the workout frame on

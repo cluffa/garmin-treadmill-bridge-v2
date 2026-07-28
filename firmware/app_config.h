@@ -109,7 +109,7 @@
  * draining it, every later message is silently discarded. At the 512-byte
  * default the boot log filled at "ant_sdm init" and everything after it — the
  * USB state-machine events, and any fatal error — was invisible. */
-#define SEGGER_RTT_CONFIG_BUFFER_SIZE_UP 4096
+#define SEGGER_RTT_CONFIG_BUFFER_SIZE_UP 8192
 #define NRF_LOG_BACKEND_RTT_ENABLED 1
 #define NRF_LOG_BACKEND_UART_ENABLED 0
 #define NRF_LOG_STR_PUSH_BUFFER_SIZE 128

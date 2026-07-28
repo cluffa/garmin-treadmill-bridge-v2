@@ -290,7 +290,7 @@ endif
 ifneq ($(__do_stamp),)
   __stale := $(shell \
     current=$$(cat $(BUILD_STAMP) 2>/dev/null || echo "none"); \
-    expected="TESTBOARD=$(TESTBOARD)|CC=$(GNU_INSTALL_ROOT)|VER=$(GNU_VERSION)"; \
+    expected="TESTBOARD=$(TESTBOARD)|CC=$(GNU_INSTALL_ROOT)|VER=$(GNU_VERSION)|EVT=$(DIAG_BLE_EVT_TRACE)|ADV=$(DIAG_ADV_DUMP)|RSSI=$(DIAG_ADV_DUMP_MIN_RSSI)"; \
     if [ "$$current" != "$$expected" ]; then \
       echo "  Build config changed ($$expected) — cleaning objects" >&2; \
       rm -f $(OUTPUT_DIRECTORY)/nrf52840_xxaa/*.o 2>/dev/null; \
