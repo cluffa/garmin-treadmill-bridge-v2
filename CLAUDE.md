@@ -69,7 +69,12 @@ Must be empty (pure protocol constant names like `ble_` are fine only if they pu
 
 ## Control contract (unchanged from old repo)
 
-- BLE service: `A6ED0001-2E7A-4E1D-9E3B-000000000000`
+- BLE service: `A6ED0001-D344-460A-8075-B9E8EC90D71B`
+  ⚠ Do **not** replace this base with a placeholder. The Garmin CIQ data field
+  and ctrl app filter on the 128-bit service UUID, so a sanitized base makes the
+  bridge invisible to the watch with no error to explain it. v2 shipped with a
+  `…-2E7A-4E1D-9E3B-000000000000` placeholder here and in `mock_watch.py`, which
+  silently broke watch compatibility until 2026-07-29.
 - Char `A6ED0002` write: uppercase ctrl grammar (`SPEED`, `SCAN`, `CONNECT`, `STOP`, `LIST`, `STATUS`).
 - Char `A6ED0003` notify: compact `D`/`E`/`S` frames (CIQ MTU is 23; notify payload <= 20 bytes).
 - Char `A6ED0004` write: raw 15-byte little-endian workout frame -> `workout_ctrl`.

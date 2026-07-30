@@ -19,11 +19,15 @@ Two command families:
 Options:
   --target <km/h>   Target speed for the workout frame (default 8.0).
 
-Service UUIDs (v2, matching firmware/ble_ctrl_svc.c):
-  Service:  A6ED0001-2E7A-4E1D-9E3B-000000000000
-  Char 0002: A6ED0002-2E7A-4E1D-9E3B-000000000000  write (ctrl grammar)
-  Char 0003: A6ED0003-2E7A-4E1D-9E3B-000000000000  notify (D/E/S frames)
-  Char 0004: A6ED0004-2E7A-4E1D-9E3B-000000000000  write (workout telemetry)
+Service UUIDs (matching firmware/ble_ctrl_svc.c and the Garmin CIQ apps):
+  Service:  A6ED0001-D344-460A-8075-B9E8EC90D71B
+  Char 0002: A6ED0002-D344-460A-8075-B9E8EC90D71B  write (ctrl grammar)
+  Char 0003: A6ED0003-D344-460A-8075-B9E8EC90D71B  notify (D/E/S frames)
+  Char 0004: A6ED0004-D344-460A-8075-B9E8EC90D71B  write (workout telemetry)
+
+This mock discovers the bridge by filtering on the 128-bit service UUID, exactly
+as the CIQ apps do — so this base must match the firmware or the mock silently
+finds nothing.
 
 15-byte workout telemetry frame layout (little-endian, matches
 core/workout_ctrl.h):
@@ -43,10 +47,10 @@ import asyncio
 import sys
 from bleak import BleakScanner, BleakClient
 
-SVC_UUID = "a6ed0001-2e7a-4e1d-9e3b-000000000000"
-CTRL_CHR = "a6ed0002-2e7a-4e1d-9e3b-000000000000"
-RSP_CHR  = "a6ed0003-2e7a-4e1d-9e3b-000000000000"
-WKT_CHR  = "a6ed0004-2e7a-4e1d-9e3b-000000000000"
+SVC_UUID = "a6ed0001-d344-460a-8075-b9e8ec90d71b"
+CTRL_CHR = "a6ed0002-d344-460a-8075-b9e8ec90d71b"
+RSP_CHR  = "a6ed0003-d344-460a-8075-b9e8ec90d71b"
+WKT_CHR  = "a6ed0004-d344-460a-8075-b9e8ec90d71b"
 
 FLAG_CONNECTED = 0x01
 FLAG_SAVED     = 0x02

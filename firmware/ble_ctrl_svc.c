@@ -1,7 +1,7 @@
 /*
  * ble_ctrl_svc.c — S340 BLE peripheral GATT server: watch control side.
  *
- * Vendor service A6ED0001-2E7A-4E1D-9E3B-000000000000 with 3 characteristics:
+ * Vendor service A6ED0001-D344-460A-8075-B9E8EC90D71B with 3 characteristics:
  *   A6ED0002 (write)     → route bytes to ctrl_dispatch()
  *   A6ED0003 (notify)    → compact D/E/S frames (≤ 20 B, CIQ MTU is 23)
  *   A6ED0004 (write)     → raw 15-byte workout frame → workout_ctrl_on_frame()
@@ -60,12 +60,18 @@ static const ble_gap_conn_params_t s_preferred_conn_params = {
 };
 #define CONN_CFG_TAG    1
 
-/* A6ED0000-2E7A-4E1D-9E3B-000000000000  — little-endian BLE byte order,
- * bytes 12-13 hold the 16-bit alias placeholder (0000). */
+/* A6ED0000-D344-460A-8075-B9E8EC90D71B  — little-endian BLE byte order,
+ * bytes 12-13 hold the 16-bit alias placeholder (0000).
+ *
+ * This base is load-bearing for watch compatibility and must not be
+ * "sanitized". The Garmin CIQ data field and ctrl app filter on the 128-bit
+ * service UUID, so a placeholder base makes the bridge invisible to them: the
+ * watch never discovers it and there is no error anywhere to explain why.
+ * Keep in sync with garmin_data_field/source/CtrlBleDelegate.mc and
+ * garmin_ctrl_app/source/BridgeBle.mc. */
 static const ble_uuid128_t CTRL_BASE = {{
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x3B, 0x9E, 0x1D, 0x4E, 0x7A, 0x2E,
-    0x00, 0x00, 0xED, 0xA6
+    0x1B, 0xD7, 0x90, 0xEC, 0xE8, 0xB9, 0x75, 0x80,
+    0x0A, 0x46, 0x44, 0xD3, 0x00, 0x00, 0xED, 0xA6
 }};
 
 #define CTRL_SVC_UUID   0x0001   /* → A6ED0001-… */

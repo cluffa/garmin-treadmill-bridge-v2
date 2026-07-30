@@ -158,7 +158,7 @@ Build first, then flash.
 The nRF52840 exposes a GATT server that the watch's Connect IQ data field or
 picker app connects to:
 
-- **Service:** `A6ED0001-2E7A-4E1D-9E3B-000000000000`
+- **Service:** `A6ED0001-D344-460A-8075-B9E8EC90D71B`
 - **Characteristic `A6ED0002`** -- write. Uppercase control grammar:
   `STATUS`, `LIST`, `SCAN`, `CONNECT <n>`, `SPEED <km/h>`, `STOP`.
 - **Characteristic `A6ED0003`** -- notify. Compact `D`/`E`/`S` response frames
