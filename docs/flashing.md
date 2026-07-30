@@ -124,21 +124,42 @@ pyocd commander -t nrf52840 -c "halt" \
 
 ---
 
-## 5. Fast app-only reflash (SWD)
+## 5. Fast app-only reflash (SWD) — ⚠ BROKEN, use `flash-full`
 
-When only the app changed and the SoftDevice/bootloader are already in place,
-skip the chip erase — sector-erase just the app region:
+> **⚠ `flash-app` does not work on this setup. Use `make flash-full` after any
+> app change.**
+>
+> It reproducibly leaves the board parked in the bootloader at
+> `pc = 0x000f8308` with the app never started (`.bss` not zeroed,
+> `s_heartbeat_cnt` garbage). Reproduced three times on 2026-07-29, twice
+> deliberately, with both a growing and a shrinking image. `flash-full` has never
+> failed.
+>
+> An earlier version of this note claimed `flash-app` "boots it reliably" because
+> it carries the settings page. That was wrong — carrying the settings page is
+> necessary but not sufficient. Full measured detail and the one outstanding
+> measurement that would likely settle it are in `docs/HANDOFF.md` under
+> "SWD / flashing recipes".
+
+The intent was: when only the app changed and the SoftDevice/bootloader are
+already in place, skip the chip erase and sector-erase just the app region.
+The target still exists and now erases the settings sector explicitly (which did
+fix a genuine skipped-write), but it is **not** reliable:
+
 ```sh
-make -C firmware flash-app         # wraps the pyocd command below
-# equivalently:
-pyocd flash -t nrf52840 --erase sector firmware/_build/nrf52840_xxaa.hex
-pyocd reset -t nrf52840
+make -C firmware flash-app         # ⚠ prints a warning and a verify reminder
 ```
-> Note: `flash-app` now regenerates and flashes the **settings page**
-> alongside the app, so it is idempotent and safe to repeat — a changed app
-> always gets a matching validation CRC, and the bootloader boots it reliably.
-> (Earlier versions of this target did not carry the settings page, which
-> could leave the bootloader refusing to start a changed app.)
+
+Whatever you flash, **always confirm the app actually started** rather than
+assuming success:
+
+```sh
+HB=$(nm -S firmware/_build/nrf52840_xxaa.out | grep ' s_heartbeat_cnt' | awk '{print "0x"$1}')
+pyocd commander -t nrf52840 -O connect_mode=attach -c "read32 $HB"
+```
+
+A small monotonically increasing value means the app booted. Garbage means
+`.bss` was never zeroed and the bootloader kept control — run `flash-full`.
 
 ---
 
@@ -228,11 +249,13 @@ ioreg -p IOUSB -l -w 0 | grep -E '"USB Product Name"|"USB Serial Number"'
   **cable/port** problem (marginal USB-C cable or host controller), not firmware:
   Nordic's own bootloader failed identically until we swapped cable/port. Try a
   known-good data cable and a direct port.
-- **App won't boot after a flash** — the settings-page CRC may not match
-  the app (e.g. after a raw pyocd flash that skipped the settings page).
-  `make flash-app` carries both app and settings; if you flashed the hex
-  directly without the settings page, re-run `make flash-app` or
-  re-provision (§4). The USB-DFU path (§6) also refreshes the settings page.
+- **App won't boot after a flash** (`pc` in `0x000F4000+`, `s_heartbeat_cnt`
+  garbage) — the settings-page CRC does not match the app, so the bootloader
+  fails boot validation and keeps control. **Run `make flash-full`** (§4); it is
+  the only target that reliably fixes this. Do **not** reach for `flash-app` —
+  it is the usual *cause* (see §5). The USB-DFU path (§6) also refreshes the
+  settings page. Confirm recovery with the heartbeat check in §5, not by
+  assuming the flash worked.
 - **DFU rejects the package** — check `--sd-req 0xCE` (S340 v7.0.1) and that the
   signing key matches the bootloader's embedded public key.
 - **Reading RAM/RTT over SWD requires a halt**, which breaks live USB enumeration.

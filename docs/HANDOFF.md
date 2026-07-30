@@ -511,15 +511,43 @@ item 4.
 - **`make flash-full` is the only target that restores the bootloader and
   `UICR NRFFW[0]`.** `make flash-app` does not. `make flash-sd` chip-erases and
   destroys both.
-- **⚠ `make flash-app` left the board in the bootloader once — mechanism NOT
-  explained.** After a `flash-app` rebuilding from a larger `-DDEBUG` image down
-  to a smaller normal one, `pc` sat at `0xf8308` (bootloader) across four samples
-  and `.bss` was never zeroed. A subsequent `flash-full` booted fine. A stale
-  settings *backup* at `0xFE000` is **not** the cause (`Makefile:354` uses
-  `--no-backup`; `0xFE000` is the MBR params page). Untested hypothesis:
-  `--erase sector` only erases what it programs, so shrinking the image leaves
-  the tail of the previous, larger app in flash. Until confirmed, **prefer
-  `flash-full` after an app change** and always confirm the app actually started.
+- **⚠⚠ `make flash-app` IS BROKEN. Use `make flash-full`.** Reproduced three
+  times on 2026-07-29 (twice deliberately), with both a growing and a shrinking
+  image: the board parks in the bootloader at `pc = 0x000f8308`, `.bss` is never
+  zeroed, `s_heartbeat_cnt` reads garbage. `flash-full` has never failed — used
+  ~6 times that session, booted every time. **Root cause still not found**, but
+  the search is now much narrower.
+
+  Measured, so nobody re-derives it:
+  - The settings page carries the app's validation CRC (`App Boot Validation
+    Type: 1` = generated CRC), so an app flashed against a settings page
+    describing a *different* app fails boot validation. That is the failure mode.
+  - Passing app + settings to **one** `pyocd flash` **skipped the settings
+    page**: pyocd printed `identical 4096 bytes (1 page)` and programmed only the
+    app's 25 pages, leaving flash at app CRC `1afcbb43` while the freshly
+    generated `settings.hex` held `505dcd7e`. `firmware/Makefile` now erases the
+    settings sector explicitly (`SETTINGS_ADDR`), which does change skip →
+    program (`identical 0 pages`).
+  - **That is not sufficient.** After explicitly erasing and programming the
+    settings page for a `TESTBOARD=0` image (size `0x00015EC4`, CRC `d4d9eb5d`),
+    flash `0x000FF000` read back size `0x00018FE4` / CRC `505dcd7e` — the
+    *previous* image's values — even though pyocd reported programming it.
+    Something restores or overwrites the settings page after pyocd writes it.
+  - The old "stale settings backup at `0xFE000`" theory stays dead: `nrfutil` is
+    passed `--no-backup`, and `0xFE000` is the MBR params page. The
+    shrinking-image hypothesis is also now unsupported — a *growing* image failed
+    identically.
+
+  **The one measurement nobody has taken:** read `0x000FF000` immediately after
+  the `pyocd flash` of the settings page and *before* `pyocd reset`. That single
+  read separates "pyocd never actually wrote it" from "the bootloader overwrote
+  it on the next boot", and would probably finish this off. The bootloader is the
+  obvious suspect for the latter.
+
+  Until then: **`flash-full` after any app change**, and always confirm the app
+  started (heartbeat check below) rather than assuming the flash worked. Note
+  `flash-full` chip-erases, so it also wipes FDS and the saved last-device — the
+  boot straight after a flash always reports "no saved device".
 - **Confirm the app is running, not the bootloader.** Read `s_heartbeat_cnt`
   twice a few seconds apart: it must be a small, monotonically increasing value.
   Garbage means `.bss` was never zeroed. `pc` in `0xF4000+` is bootloader,

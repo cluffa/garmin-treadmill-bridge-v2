@@ -326,6 +326,11 @@ DFU_ZIP      := $(OUTPUT_DIRECTORY)/app_dfu.zip
 APP_HEX      := $(OUTPUT_DIRECTORY)/nrf52840_xxaa.hex
 SETTINGS_HEX := $(OUTPUT_DIRECTORY)/settings.hex
 
+# Bootloader settings page. MUST be the full 8-digit address: `pyocd erase
+# --sector 0xFF000` treats a short address as unaligned and silently erases page
+# 0x00000000 instead (see docs/flashing.md).
+SETTINGS_ADDR := 0x000FF000
+
 # GPREGRET DFU-start magic (BOOTLOADER_DFU_START) + POWER->GPREGRET address.
 GPREGRET_ADDR  := 0x4000051C
 GPREGRET_DFU   := 0xB1
@@ -377,14 +382,50 @@ flash-full: settings
 flash-sd:
 	$(PYOCD) flash -t $(PYOCD_TARGET) --erase chip $(S340_HEX)
 
-# Fast app-only reflash (sector erase). Regenerates and flashes the settings
-# page alongside the app: the settings page holds the app's validation CRC, so
-# flashing a *changed* app without it leaves a stale CRC and the bootloader can
-# refuse to start the image. Carrying both makes this idempotent and safe to
-# repeat. See docs/flashing.md §5.
+# ⚠⚠ BROKEN ON THIS SETUP — PREFER flash-full. ⚠⚠
+#
+# flash-app reproducibly leaves the board parked in the bootloader at
+# pc=0x000f8308, app never started (.bss not zeroed, s_heartbeat_cnt garbage).
+# Reproduced three times on 2026-07-29, twice deliberately, with both a growing
+# and a shrinking image. flash-full has never failed. Root cause NOT found.
+#
+# What is measured, so nobody re-derives it:
+#
+#  * The settings page holds the app's validation CRC (App Boot Validation Type
+#    is 1 = generated CRC), so an app flashed against a settings page describing
+#    a different app fails the bootloader's boot validation.
+#  * Passing $(APP_HEX) $(SETTINGS_HEX) to ONE `pyocd flash` skipped the settings
+#    page: pyocd reported "identical 4096 bytes (1 page)" and programmed only the
+#    app's 25 pages, leaving flash at app CRC 1afcbb43 while the freshly
+#    generated settings.hex held 505dcd7e. Hence the explicit sector erase below,
+#    which does change skip -> program ("identical 0 pages").
+#  * BUT that is NOT sufficient. After erasing and programming the settings page
+#    for a TESTBOARD=0 image (size 0x00015EC4, CRC d4d9eb5d), flash 0x000FF000
+#    read back size 0x00018FE4 / CRC 505dcd7e — the PREVIOUS image's values —
+#    even though pyocd reported programming that page. Something restores or
+#    overwrites the settings page after pyocd writes it and before/while the
+#    bootloader runs. The bootloader itself is the obvious suspect (0x000FE000 is
+#    the MBR params page; --no-backup is already passed to nrfutil), but this is
+#    unproven.
+#
+# Next step for whoever picks this up: read 0x000FF000 immediately after the
+# `pyocd flash` of the settings page but BEFORE `pyocd reset`. That single
+# measurement separates "pyocd never wrote it" from "the bootloader overwrote
+# it", and nobody has taken it yet.
 flash-app: settings
-	$(PYOCD) flash -t $(PYOCD_TARGET) --erase sector $(APP_HEX) $(SETTINGS_HEX)
+	@echo "⚠ flash-app is BROKEN on this setup — it parks in the bootloader."
+	@echo "⚠ Use 'make flash-full' instead. Continuing in 3s; Ctrl-C to abort."
+	@sleep 3
+	$(PYOCD) flash -t $(PYOCD_TARGET) --erase sector $(APP_HEX)
+	$(PYOCD) erase -t $(PYOCD_TARGET) --sector $(SETTINGS_ADDR)
+	$(PYOCD) flash -t $(PYOCD_TARGET) --erase sector $(SETTINGS_HEX)
 	$(PYOCD) reset -t $(PYOCD_TARGET)
+	@echo ""
+	@echo "flash-app: NOW VERIFY THE APP ACTUALLY STARTED —"
+	@echo "  HB=\$$(nm -S $(OUTPUT_DIRECTORY)/nrf52840_xxaa.out | grep ' s_heartbeat_cnt' | awk '{print \"0x\"\$$1}')"
+	@echo "  $(PYOCD) commander -t $(PYOCD_TARGET) -O connect_mode=attach -c \"read32 \$$HB\""
+	@echo "  Small monotonically increasing value = the app booted."
+	@echo "  Garbage = .bss never zeroed, bootloader kept control -> run flash-full."
 
 # Kick the running app into the DFU bootloader over SWD: set GPREGRET magic and
 # do a *software* reset (SYSRESETREQ preserves GPREGRET; POR/pin reset clears it).

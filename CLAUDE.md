@@ -20,7 +20,7 @@ make -C firmware -j8 \
 # No onboard debugger: SWD via a Pico/CMSIS-DAP + pyocd (NOT nrfjprog); USB via nrfutil.
 # All flash/DFU targets CONSUME an existing build (they do not rebuild). Build first.
 make flash-full                        # first-time: SD+app+bootloader+settings, chip erase (SWD)
-make flash-app                         # fast app-only reflash + settings page (SWD)
+make flash-app                         # ⚠ BROKEN — parks in the bootloader; use flash-full
 make flash-sd                          # SoftDevice only, chip-erases (⚠ see below)
 make dfu                               # signed USB-DFU package (consumes build)
 make dfu-enter                         # kick running app into DFU (SWD, GPREGRET)
