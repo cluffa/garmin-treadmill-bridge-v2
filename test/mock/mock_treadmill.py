@@ -88,7 +88,7 @@ def on_cp_write(characteristic, value: bytearray) -> None:
 
 
 async def main():
-    server = BlessServer(name="MockTreadmill")
+    server = BlessServer(name="MockTmill")
     server.read_request_func = None
     server.write_request_func = on_cp_write
 
@@ -112,7 +112,7 @@ async def main():
     # and the mock never appears in LIST. Silent and very confusing: the mock
     # prints "advertising" and is genuinely on air, just not as a treadmill.
     await server.start(prioritize_local_name=False)
-    print("MockTreadmill advertising -- FTMS 0x1826 / TD 0x2ACD / CP 0x2AD9")
+    print("MockTmill advertising -- FTMS 0x1826 / TD 0x2ACD / CP 0x2AD9")
     print("Speed ramps to 12 km/h; use SPEED command from bridge to override.")
 
     t0 = time.time()

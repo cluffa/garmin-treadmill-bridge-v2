@@ -29,6 +29,31 @@
 /* BLE central: scanning module */
 #define NRF_BLE_SCAN_ENABLED 1
 #define NRF_BLE_SCAN_BUFFER 255
+
+/* Scan duty cycle. Units are 0.625 ms, so 160/32 is a 20 ms window every 100 ms
+ * = 20%. The SDK default is 160/80 — a 50% duty cycle, which assumes scanning is
+ * the only thing the radio is doing. Here it is one of three users: a BLE
+ * peripheral link to the watch, a BLE central link to the treadmill, and an ANT
+ * master broadcasting at 8 Hz. At 50% the peripheral link starved and dropped
+ * with BLE_HCI_CONNECTION_TIMEOUT (0x08) while the central was mid-connect.
+ * Discovery gets slower, which costs a second or two on SCAN and is worth it to
+ * keep an established link alive. */
+#define NRF_BLE_SCAN_SCAN_INTERVAL 160   /* 100 ms */
+#define NRF_BLE_SCAN_SCAN_WINDOW    32   /*  20 ms */
+
+/* Treadmill link connection interval, in ms. The SDK default minimum is 7.5 ms
+ * — the fastest interval BLE permits — which lets a central link claim a radio
+ * event every 7.5 ms. With a 30 ms peripheral link to the watch and an ANT
+ * master broadcasting at 8 Hz also competing, the peripheral link starved and
+ * dropped with BLE_HCI_CONNECTION_TIMEOUT (0x08) whenever the treadmill link
+ * was active. The peripheral is the fragile one: the central negotiates a 4 s
+ * supervision timeout while the watch's central picks its own, and macOS picks
+ * 720 ms and ignores our PPCP.
+ *
+ * A treadmill streams telemetry at 1-4 Hz, so 7.5 ms buys nothing and costs the
+ * link we cannot afford to lose. */
+#define NRF_BLE_SCAN_MIN_CONNECTION_INTERVAL 30
+#define NRF_BLE_SCAN_MAX_CONNECTION_INTERVAL 60
 #define NRF_BLE_SCAN_FILTER_ENABLE 0         /* we classify in SW */
 #define NRF_BLE_SCAN_CONNECTION_ENABLE 0     /* connect_policy owns connects */
 #define NRF_BLE_SCAN_NAME_CNT 0

@@ -28,6 +28,36 @@
 #include <string.h>
 
 #define DEVICE_NAME     "TMILL-CTRL"
+
+/* ---- Preferred connection parameters (watch link) ---------------------------
+ *
+ * Raw SoftDevice units: intervals in 1.25 ms, supervision timeout in 10 ms.
+ *
+ * The supervision timeout is the load-bearing value. With no preference
+ * advertised the central picks unilaterally, and macOS chose 720 ms — too thin
+ * for this device, which also drives a BLE central and an ANT master and so
+ * cannot always service a 30 ms peripheral interval. The watch link was dropping
+ * with BLE_HCI_CONNECTION_TIMEOUT (0x08) while the central was mid-connect: a
+ * healthy link killed purely by starvation. 4 s tolerates a long starve without
+ * masking a genuinely dead link.
+ *
+ * Constraint: conn_sup_timeout must exceed (1 + latency) * max_interval * 2,
+ * i.e. > 120 ms here. */
+#define CTRL_CONN_MIN_INTERVAL   24   /*   30 ms */
+#define CTRL_CONN_MAX_INTERVAL   48   /*   60 ms */
+#define CTRL_CONN_SLAVE_LATENCY   0
+#define CTRL_CONN_SUP_TIMEOUT   400   /* 4000 ms */
+
+/* Below this, ask the central to renegotiate rather than accept a link that
+ * will drop under three-radio load. 2 s in 10 ms units. */
+#define CTRL_CONN_SUP_MIN       200
+
+static const ble_gap_conn_params_t s_preferred_conn_params = {
+    .min_conn_interval = CTRL_CONN_MIN_INTERVAL,
+    .max_conn_interval = CTRL_CONN_MAX_INTERVAL,
+    .slave_latency     = CTRL_CONN_SLAVE_LATENCY,
+    .conn_sup_timeout  = CTRL_CONN_SUP_TIMEOUT,
+};
 #define CONN_CFG_TAG    1
 
 /* A6ED0000-2E7A-4E1D-9E3B-000000000000  — little-endian BLE byte order,
@@ -228,6 +258,22 @@ static void ble_evt_handler(const ble_evt_t *p_evt, void *p_ctx)
                      (unsigned int)gap->params.connected.conn_params.max_conn_interval,
                      (unsigned int)gap->params.connected.conn_params.slave_latency,
                      (unsigned int)gap->params.connected.conn_params.conn_sup_timeout);
+        /* PPCP is only a hint and a central may ignore it, so check what we
+         * actually got. A too-short supervision timeout is the difference
+         * between surviving a busy moment and dropping a healthy link, so ask
+         * for better. The central is free to refuse — log and carry on. */
+        if (gap->params.connected.conn_params.conn_sup_timeout < CTRL_CONN_SUP_MIN) {
+            uint32_t err = sd_ble_gap_conn_param_update(s_conn_handle,
+                                                       &s_preferred_conn_params);
+            if (err != NRF_SUCCESS) {
+                NRF_LOG_WARNING("ctrl_svc: conn param update request err 0x%x",
+                                (unsigned int)err);
+            } else {
+                NRF_LOG_INFO("ctrl_svc: sup=%u too short — requested %u",
+                             (unsigned int)gap->params.connected.conn_params.conn_sup_timeout,
+                             (unsigned int)CTRL_CONN_SUP_TIMEOUT);
+            }
+        }
         break;
 
     case BLE_GAP_EVT_DISCONNECTED:
@@ -292,6 +338,19 @@ static void ble_evt_handler(const ble_evt_t *p_evt, void *p_ctx)
                 NRF_LOG_WARNING("ctrl_svc: conn param update reply err 0x%x",
                                 (unsigned int)err);
             }
+        }
+        break;
+
+    case BLE_GAP_EVT_CONN_PARAM_UPDATE:
+        /* Whether a renegotiation request was actually honoured. Without this
+         * there is no way to tell an accepted update from a silently ignored
+         * one, and the supervision timeout in force decides whether this link
+         * survives a busy moment. */
+        if (gap->conn_handle == s_conn_handle) {
+            NRF_LOG_INFO("ctrl_svc: conn params now int=%u lat=%u sup=%u",
+                (unsigned int)gap->params.conn_param_update.conn_params.max_conn_interval,
+                (unsigned int)gap->params.conn_param_update.conn_params.slave_latency,
+                (unsigned int)gap->params.conn_param_update.conn_params.conn_sup_timeout);
         }
         break;
 
@@ -433,6 +492,11 @@ static void advertising_init(void)
     APP_ERROR_CHECK(sd_ble_gap_device_name_set(&sec,
                                                (const uint8_t *)DEVICE_NAME,
                                                strlen(DEVICE_NAME)));
+
+    /* Advertise a connection-parameter preference so a well-behaved central
+     * picks a workable supervision timeout up front, instead of us having to
+     * renegotiate after the fact. */
+    APP_ERROR_CHECK(sd_ble_gap_ppcp_set(&s_preferred_conn_params));
 
     /* Advert: flags + the 128-bit service UUID (fills most of the 31 B);
      * the name goes in the scan response. */

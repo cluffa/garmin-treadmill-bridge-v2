@@ -114,6 +114,16 @@ APP_TIMER_DEF(m_gattc_retry_timer);
 static uint8_t  s_gattc_retries;
 static uint16_t s_gattc_retry_from;  /* from-handle for CHR / DESC retry */
 
+/* Discovery-failure cooldown. A machine that accepts a connection but fails
+ * GATT discovery must not be retried immediately: connect -> fail -> disconnect
+ * -> scan -> reconnect is a tight loop that keeps the radio busy enough to
+ * starve the watch link into a supervision timeout. Suppress the offending
+ * address from the scan list for a while so connect_policy cannot pick it. */
+#define DISC_FAIL_COOLDOWN_TICKS APP_TIMER_TICKS(30000)   /* 30 s */
+static uint8_t  s_fail_addr[6];
+static bool     s_have_fail;
+static uint32_t s_fail_ticks;
+
 /* iFit odometer: the frames carry no distance — integrate from speed. */
 static float            s_distance_m;
 static uint32_t         s_last_rx_ticks;
@@ -222,7 +232,11 @@ static void update_link_state(void)
  * event handler cleans up and re-enters scanning. */
 static void gattc_fail(void)
 {
-    NRF_LOG_WARNING("central: GATT discovery failed — disconnecting");
+    NRF_LOG_WARNING("central: GATT discovery failed — disconnecting "
+                    "(suppressing it for 30 s)");
+    memcpy(s_fail_addr, s_target.addr, 6);
+    s_have_fail  = true;
+    s_fail_ticks = app_timer_cnt_get();
     app_state_set_fault(1);  /* discovery fault */
     s_stage = DISC_IDLE;
     s_gattc_retries = 0;
@@ -414,6 +428,19 @@ static void subscribed(void)
 {
     s_stage = DISC_DONE;
     NRF_LOG_INFO("central: subscribed — notifications active");
+
+    /* Persist as last-connected only now, with notifications actually flowing.
+     * This used to happen on BLE_GAP_EVT_CONNECTED, which made a machine we
+     * could not use "the saved device" — and connect_policy rule 1 gives the
+     * saved device the link the moment it reappears. A peripheral that accepts
+     * a connection but fails GATT discovery therefore got reconnected
+     * immediately, forever: connect -> discovery fails -> disconnect -> scan ->
+     * same device wins again. That tight loop keeps the radio busy enough to
+     * starve the watch link into a supervision timeout, so one unusable
+     * treadmill in range took down the link that matters. */
+    s_saved = s_target;
+    s_have_saved = true;
+    last_device_save(&s_target);
     if (s_proto == MACHINE_PROTO_IFIT) {
         ifit_fsm_reset();
         s_distance_m = 0;
@@ -681,6 +708,16 @@ static void policy_timer_cb(void *ctx)
 
 static void on_adv_report(const ble_gap_evt_adv_report_t *r)
 {
+    /* Still in the post-failure cooldown? Drop it before it can reach the list
+     * and be chosen again. */
+    if (s_have_fail && memcmp(r->peer_addr.addr, s_fail_addr, 6) == 0) {
+        if (app_timer_cnt_diff_compute(app_timer_cnt_get(), s_fail_ticks)
+            < DISC_FAIL_COOLDOWN_TICKS) {
+            return;
+        }
+        s_have_fail = false;   /* cooldown expired — give it another chance */
+    }
+
     char name[FTMS_NAME_LEN];
     adv_name(r->data.p_data, (uint8_t)r->data.len, name, FTMS_NAME_LEN);
 
@@ -781,10 +818,8 @@ static void ble_evt_handler(const ble_evt_t *p_evt, void *p_ctx)
                      nrf_log_push((char *)s_target.name),
                      s_proto == MACHINE_PROTO_IFIT ? "iFit" : "FTMS",
                      (unsigned int)s_conn_handle);
-        /* Remember for next power-up (skipped when unchanged). */
-        s_saved = s_target;
-        s_have_saved = true;
-        last_device_save(&s_target);
+        /* NOT saved as last-connected here — see subscribed(). A raw GAP link
+         * proves nothing about whether this machine is usable. */
         update_link_state();
         if (s_link_cb) s_link_cb(true);
         disc_start();
