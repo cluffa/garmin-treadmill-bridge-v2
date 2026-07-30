@@ -141,7 +141,23 @@ Two design points worth not undoing:
   `gattc_fail()` leaving `s_stage` at `DISC_IDLE` is what signals "never became
   usable" to that handler.
 
-Escalation verified as 1/2/4/8/16/30/30 s. Original report follows.
+Escalation verified as 1/2/4/8/16/30/30 s.
+
+⚠ **The first version of this fix did not actually escalate**, and only a
+hardware run caught it. `backoff_blocks()` cleared `s_fail_count` along with
+`s_have_fail` when the window expired, so the next failure found no history and
+restarted at 1. Four consecutive failures all logged
+`attempt 1 … not auto-retrying for 1000 ms`. Expiry must stop *blocking* without
+erasing the *history*; only `attempt_succeeded()` clears the count. The
+arithmetic had been unit-checked in isolation and was fine — the state machine
+around it was not, which is exactly the gap a bench run closes and a desk check
+does not.
+
+Note the base step is close to a no-op by design: `policy_evaluate()` already
+runs on the 1 Hz policy tick, so 1000 ms means "retry next tick", which is right
+for a transient failure. The escalation is what does the work.
+
+Original report follows.
 
 Observed four consecutive failures before the fifth attempt succeeded:
 ```

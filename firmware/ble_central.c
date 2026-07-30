@@ -138,7 +138,12 @@ static uint16_t s_gattc_retry_from;  /* from-handle for CHR / DESC retry */
  * dropping the advert would also drop the device from s_devs, so it would
  * vanish from LIST and the watch could not choose it manually even though a
  * human explicitly asked. It stays visible and manually selectable; only the
- * *automatic* policy pick is suppressed. */
+ * *automatic* policy pick is suppressed.
+ *
+ * Note the base step is roughly a no-op by design: policy_evaluate() already
+ * runs on the 1 Hz policy tick, so a 1000 ms backoff just means "retry on the
+ * next tick", which is what you want for a transient failure. The escalation is
+ * what does the real work once a machine keeps failing. */
 #define BACKOFF_BASE_MS  1000u
 #define BACKOFF_MAX_MS  30000u
 static uint8_t  s_fail_addr[6];
@@ -261,17 +266,19 @@ static uint32_t backoff_ms(void)
     return ms;
 }
 
-/* True while addr is still cooling down after one or more failed attempts. */
+/* True while addr is still cooling down after one or more failed attempts.
+ *
+ * Deliberately does NOT clear s_fail_count when the window expires. An earlier
+ * version did, and it silently defeated the whole escalation: the next failure
+ * found no history and restarted at 1, so every retry logged "attempt 1 … 1000
+ * ms" no matter how many times in a row the machine had failed. Observed on
+ * hardware over four consecutive failures. Only attempt_succeeded() clears the
+ * history — expiry just stops blocking. */
 static bool backoff_blocks(const uint8_t *addr)
 {
     if (!s_have_fail || memcmp(addr, s_fail_addr, 6) != 0) return false;
-    if (app_timer_cnt_diff_compute(app_timer_cnt_get(), s_fail_ticks)
-        >= APP_TIMER_TICKS(backoff_ms())) {
-        s_have_fail  = false;   /* expired — give it another chance */
-        s_fail_count = 0;
-        return false;
-    }
-    return true;
+    return app_timer_cnt_diff_compute(app_timer_cnt_get(), s_fail_ticks)
+           < APP_TIMER_TICKS(backoff_ms());
 }
 
 /* One attempt on addr never produced a usable link. Escalate its backoff. */
