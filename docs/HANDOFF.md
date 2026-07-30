@@ -298,6 +298,35 @@ on a board that has already faulted.
 process with no controlling TTY, and the failure is **silent** — the mock prints
 "advertising" and is genuinely on air, just invisible.
 
+**9. ⚠ macOS caches a peripheral's GATT database and does NOT invalidate it when
+the firmware changes.** The cache is keyed by device address. Advertisements are
+read live off the radio, but the service/characteristic list served on connect
+can be stale — so after the UUID change in `775dde7` the host matched the **new**
+service UUID in the advert, connected, and then failed to find the **new**
+characteristics:
+```
+found: … TMILL-CTRL
+connected: True
+BleakCharacteristicNotFoundError: Characteristic a6ed0003-d344-… was not found!
+```
+The device side is blameless in this signature. Confirm it by reading the RTT
+log: you will see `watch connected`, the conn-param renegotiation, then
+`watch disconnected (reason 0x13)` — `0x13` is
+`BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION`, i.e. *the host* hung up — and **no**
+`notifications on`, because the CCCD was never written.
+
+Fix: toggle Bluetooth off/on in System Settings, or `sudo pkill bluetoothd`.
+
+`test/mock/dump_gatt.py` diagnoses it. It finds the bridge **by name** rather
+than by service UUID, so it works no matter which base the host currently
+believes in, dumps every service and characteristic, and prints a verdict
+distinguishing a stale host cache from a genuine firmware problem.
+
+Related trap in the same family: **a connected peripheral link stops
+advertising**, so a mock left running from an earlier attempt makes the next one
+report `DEVICE NOT FOUND`. Check `watch_connected` in RAM before suspecting
+anything deeper.
+
 ---
 
 ## Reference: root cause of the original boot failure (2026-07-27)
