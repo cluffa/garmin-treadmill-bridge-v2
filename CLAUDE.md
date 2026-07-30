@@ -103,6 +103,21 @@ simultaneous FTMS+iFit connections.
 `firmware/` is the nRF5-SDK + S340 radio glue: BLE peripheral (watch-facing ctrl-svc), BLE central (treadmill-facing FTMS/iFit), ANT master (footpod broadcast), USB-CDC console.
 The bridge between them is `core/machine.h` — a unified facade that auto-detects FTMS (0x1826) and iFit (0x1533) into one device list and routes connect/speed/incline/stop to the right adapter.
 `firmware/app_state.h` is the shared struct all three radios and the testboard render from.
+`watch/` is the Connect IQ side, vendored in on 2026-07-29: `garmin_data_field`
+(writes the 15-byte workout frame to `A6ED0004` — the main product path) and
+`garmin_ctrl_app` (the SCAN/CONNECT picker over `A6ED0002`/`0003`). See
+`watch/README.md`.
+
+⚠ **A free run does not move the belt, by design.** `decode_action()` returns
+`ACT_NONE` when no structured workout step is present, which means "don't touch
+the belt", and `workout_ctrl_tick()` keeps re-asserting the last latched speed.
+Driving the belt requires a structured workout with a **speed** target. This has
+looked like a bug twice; it isn't.
+
+`make host-test` runs `make check-uuid` first, which asserts firmware, mock, and
+both CIQ projects agree on the 128-bit A6ED base. Keep it that way: the watch
+finds the bridge by *filtering* on that UUID, so any disagreement is silent — the
+watch simply never sees the device.
 
 ## `firmware/` Makefile TESTBOARD stamp
 

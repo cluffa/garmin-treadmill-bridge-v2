@@ -23,7 +23,11 @@ FW_MAKE_ARGS = \
 help:
 	@echo "Build:"
 	@echo "  make host-test              core/ unit tests (no toolchain needed)"
+	@echo "  make check-uuid             assert firmware/mock/watch agree on the A6ED UUID"
 	@echo "  make firmware               build the nRF52840 image"
+	@echo "Watch (Connect IQ) — see watch/README.md:"
+	@echo "  watch/garmin_data_field     writes workout targets to A6ED0004"
+	@echo "  watch/garmin_ctrl_app       SCAN/CONNECT picker UI (A6ED0002/0003)"
 	@echo "Package / flash (see docs/flashing.md — these consume an existing build):"
 	@echo "  make dfu                    signed USB-DFU package"
 	@echo "  make settings               bootloader settings page"
@@ -36,8 +40,14 @@ help:
 	@echo "First build on a new machine: copy firmware/ant_network_key.h.example"
 	@echo "and firmware/ant_license.mk.example (see README)."
 
-host-test:
+host-test: check-uuid
 	$(MAKE) -C test/host
+
+# The watch discovers the bridge by filtering on the 128-bit A6ED service UUID,
+# so firmware/mock/CIQ disagreement is SILENT — the watch just never finds the
+# device. Cheap to check, so it runs as part of the standard gate.
+check-uuid:
+	@python3 test/check_uuid_contract.py
 
 firmware:
 	$(MAKE) -C firmware $(FW_MAKE_ARGS)

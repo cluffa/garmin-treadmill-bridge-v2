@@ -1,0 +1,6 @@
+# Connect IQ build outputs — regenerate with monkeyc (see README.md).
+out/
+build/
+bin/
+*.prg
+*.prg.debug.xml
