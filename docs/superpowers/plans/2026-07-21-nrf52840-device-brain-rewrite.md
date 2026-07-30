@@ -15,7 +15,21 @@
 - **SDK:** nRF5 SDK 17.1.0 at `$(SDK_ROOT)` (default `$HOME/nRF5_SDK_17.1.0_ddde560`).
 - **SoftDevice:** S340 v7.0.1. API headers: `S340_API` = `/Users/alex/workspace/nrf52/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.API/include`. Hex: `/Users/alex/workspace/nrf52/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.hex`.
 - **ARM toolchain:** `arm-none-eabi-gcc` (`/opt/homebrew/bin`), GNU_VERSION per `arm-none-eabi-gcc -dumpversion`.
-- **Control contract (unchanged):** service `A6ED0001-2E7A-4E1D-9E3B-000000000000`-style base; char `A6ED0002` write (uppercase ctrl grammar), `A6ED0003` notify (compact `D`/`E`/`S` frames), `A6ED0004` write (raw 15-byte little-endian workout frame → `workout_ctrl`). CIQ MTU is 23; notify payload ≤ 20 bytes.
+- **Control contract (unchanged):** service `A6ED0001-D344-460A-8075-B9E8EC90D71B`; char `A6ED0002` write (uppercase ctrl grammar), `A6ED0003` notify (compact `D`/`E`/`S` frames), `A6ED0004` write (raw 15-byte little-endian workout frame → `workout_ctrl`). CIQ MTU is 23; notify payload ≤ 20 bytes.
+  > **Corrected 2026-07-29.** This line originally read
+  > ``A6ED0001-2E7A-4E1D-9E3B-000000000000`-style base``, and that is where the
+  > UUID regression fixed in `775dde7` came from. The `-style` hedge was meant
+  > illustratively — the real base was deliberately left out — but it was
+  > implemented literally, and the placeholder shipped in
+  > `firmware/ble_ctrl_svc.c` and `test/mock/mock_watch.py`. Because the Garmin
+  > CIQ apps discover the bridge by *filtering on the 128-bit service UUID*, that
+  > made the bridge invisible to the watch with no error to explain it, and gate
+  > checks B1/B4/B5 unpassable.
+  >
+  > Lesson for future plans: a contract described as "unchanged" must either
+  > carry the **exact** value or point at the file that holds it — never an
+  > illustrative stand-in. Sanitize in prose, not in a spec an implementer will
+  > copy.
 - **ANT:** device type 124 (Stride SDM), network key in git-ignored `ant_network_key.h` (placeholder builds; real key from thisisant.com). ANT eval license key passed by Makefile.
 - **One-connection-at-a-time invariant:** the BLE central holds at most one treadmill link; connecting tears down the other protocol first and suppresses auto-reconnect while the other is connecting/connected. Never reintroduce simultaneous FTMS+iFit connections.
 - **Secrets never committed:** `ant_network_key.h`, `dfu/dfu_private_key.pem`. Provide `.example` placeholders.
