@@ -185,6 +185,12 @@ int main(void)
     NRF_LOG_INFO("testboard initialized (OLED + LED + buzzer + button)");
 #endif
 
+    /* Last, once all three radios are up: reconnect a remembered treadmill
+     * without waiting to be asked. Deliberately after ant_sdm_start() so the
+     * scan's radio time is competing with a fully configured ANT master rather
+     * than starting mid-bring-up. No-op when nothing was remembered. */
+    ble_central_autostart();
+
     for (;;) {
         /* Pump USBD events (CDC ACM RX/TX callbacks fire here) */
         (void)app_usbd_event_queue_process();

@@ -64,6 +64,32 @@ silently broken the Part A instrument.
 ⚠ **Do not re-sanitize this base.** It is load-bearing for watch compatibility.
 `CLAUDE.md` now carries a warning to that effect.
 
+### Nothing started scanning at boot, so auto-reconnect never worked
+
+Reported from the bench as "it only auto connects after running scan", and that
+was exactly right. The only things that ever called `ble_central_scan_start()`
+were a ctrl `SCAN` from the watch, the testboard button
+(`main.c` `testboard_action_scan()`), and the rescan-after-disconnect path —
+which presupposes an earlier connection. A freshly powered bridge therefore sat
+in `LINK_DOWN` indefinitely, and `last_device`, whose entire purpose is "remember
+for next power-up", could never fire: `connect_policy` rule 1 hands the saved
+device the link the moment it appears, but it never got to see an advert.
+
+Added `ble_central_autostart()`, called from `main()` **after** all three radios
+are up (so the scan competes with a fully configured ANT master rather than
+starting mid-bring-up). It is deliberately gated on actually having a saved
+device: the scan module runs with `NRF_BLE_SCAN_SCAN_DURATION 0` (scan until
+stopped) and its radio time competes with the watch link and ANT — the exact
+contention that was starving the peripheral link — so a bridge that has never
+paired waits to be asked rather than scanning forever for nothing.
+
+Logs `central: saved device "…" — scanning to reconnect`, or
+`central: no saved device — idle until SCAN`.
+
+⚠ Verifying this needs care: `make flash-full` chip-erases and wipes FDS, so the
+boot straight after a flash always reports "no saved device". The real test is
+SCAN + CONNECT (which saves), then **`make reset`** — not another `flash-full`.
+
 ### Watch link dropped under three-radio load (`8b99249`)
 
 Three causes conspired to kill a healthy watch link with

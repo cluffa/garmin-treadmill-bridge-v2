@@ -1127,6 +1127,33 @@ void ble_central_init(void)
     NRF_LOG_INFO("central: initialized (scan module ready)");
 }
 
+/* Begin scanning at boot so a remembered treadmill can be reconnected without
+ * anyone asking.
+ *
+ * Nothing used to start a scan at boot: the only entry points were a ctrl SCAN
+ * from the watch, the testboard button, and the rescan-after-disconnect path
+ * (which presupposes an earlier connection). So a freshly powered bridge sat in
+ * LINK_DOWN indefinitely, and last_device — whose entire purpose is "remember
+ * for next power-up" — could never fire. connect_policy rule 1 hands the saved
+ * device the link the moment it appears; it just never got to see an advert.
+ *
+ * Deliberately gated on having a saved device. Scanning is not free: the module
+ * is configured with NRF_BLE_SCAN_SCAN_DURATION 0 (scan until stopped), and its
+ * radio time competes with the watch link and the ANT master — the exact
+ * contention that was starving the peripheral link. A bridge that has never
+ * paired has nothing to reconnect to, so it waits to be asked instead of
+ * scanning forever for nothing. */
+void ble_central_autostart(void)
+{
+    if (!s_have_saved) {
+        NRF_LOG_INFO("central: no saved device — idle until SCAN");
+        return;
+    }
+    NRF_LOG_INFO("central: saved device \"%s\" — scanning to reconnect",
+                 nrf_log_push((char *)s_saved.name));
+    ble_central_scan_start();
+}
+
 void ble_central_scan_start(void)
 {
     CRITICAL_REGION_ENTER();
