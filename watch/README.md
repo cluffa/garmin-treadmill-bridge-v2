@@ -98,9 +98,14 @@ cp out/app.prg /Volumes/GARMIN/GARMIN/APPS/
 
 Eject cleanly, then add the field to a run activity's data screen.
 
-## Before trusting the ctrl app's picker
+## A note on the ctrl app's picker
 
-Known bridge-side defect: advertisement names currently arrive empty
-(`central: found "" rssi -60 (iFit)`), so `LIST` returns blank names and the
-picker's device list is unusable. The data field is unaffected — it needs no
-names. See `docs/HANDOFF.md`.
+An earlier version of this file warned that `LIST` returns blank names and the
+picker is unusable. **That was a misdiagnosis** — see `docs/HANDOFF.md` open
+item 2. A treadmill puts its service UUID in the primary advert and its name in
+the scan response, so the bridge's *log* showed `found ""` at first sight while
+the list entry got the name moments later. Names reach `LIST` fine.
+
+The only residual wrinkle is a narrow race: a `LIST` issued in the window between
+the primary advert and the scan response can show one device nameless. Re-`LIST`
+and it resolves.

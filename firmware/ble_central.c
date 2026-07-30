@@ -114,15 +114,37 @@ APP_TIMER_DEF(m_gattc_retry_timer);
 static uint8_t  s_gattc_retries;
 static uint16_t s_gattc_retry_from;  /* from-handle for CHR / DESC retry */
 
-/* Discovery-failure cooldown. A machine that accepts a connection but fails
- * GATT discovery must not be retried immediately: connect -> fail -> disconnect
- * -> scan -> reconnect is a tight loop that keeps the radio busy enough to
- * starve the watch link into a supervision timeout. Suppress the offending
- * address from the scan list for a while so connect_policy cannot pick it. */
-#define DISC_FAIL_COOLDOWN_TICKS APP_TIMER_TICKS(30000)   /* 30 s */
+/* ---- Failed-attempt backoff -------------------------------------------------
+ *
+ * A machine that accepts a connection but never becomes usable must not be
+ * retried immediately. Two different failures produce the same tight loop:
+ *
+ *   BLE_HCI_CONN_FAILED_TO_BE_ESTABLISHED (0x3E) — the link is created and the
+ *   link layer then never completes establishment; and a GATT discovery failure
+ *   via gattc_fail().
+ *
+ * Either way: connect -> fail -> disconnect -> scan -> the saved device wins
+ * again -> connect, with no pause. That keeps the radio busy enough to starve
+ * the watch link into a supervision timeout, so one unusable treadmill in range
+ * takes down the link that actually matters. Observed on hardware 2026-07-29:
+ * four consecutive 0x3E failures before the fifth attempt succeeded.
+ *
+ * Backoff is per-address and escalates 1/2/4/8/16/30 s, cleared the moment a
+ * link reaches DISC_DONE. A link that *did* become usable and then dropped is
+ * NOT a failed attempt — it reconnects immediately, which keeps recovery from a
+ * genuine treadmill power-cycle fast (hardware-test-plan Phase 8.1).
+ *
+ * The gate lives in policy_evaluate(), deliberately NOT in on_adv_report():
+ * dropping the advert would also drop the device from s_devs, so it would
+ * vanish from LIST and the watch could not choose it manually even though a
+ * human explicitly asked. It stays visible and manually selectable; only the
+ * *automatic* policy pick is suppressed. */
+#define BACKOFF_BASE_MS  1000u
+#define BACKOFF_MAX_MS  30000u
 static uint8_t  s_fail_addr[6];
 static bool     s_have_fail;
 static uint32_t s_fail_ticks;
+static uint8_t  s_fail_count;
 
 /* iFit odometer: the frames carry no distance — integrate from speed. */
 static float            s_distance_m;
@@ -226,17 +248,67 @@ static void update_link_state(void)
     app_state()->central_link = st;
 }
 
+/* ---- Failed-attempt backoff helpers ------------------------------------------ */
+
+/* Current backoff for the tracked address: 1, 2, 4, 8, 16, 30, 30 … seconds. */
+static uint32_t backoff_ms(void)
+{
+    uint32_t ms = BACKOFF_BASE_MS;
+    for (uint8_t i = 1; i < s_fail_count; i++) {
+        if (ms >= BACKOFF_MAX_MS / 2) return BACKOFF_MAX_MS;
+        ms *= 2;
+    }
+    return ms;
+}
+
+/* True while addr is still cooling down after one or more failed attempts. */
+static bool backoff_blocks(const uint8_t *addr)
+{
+    if (!s_have_fail || memcmp(addr, s_fail_addr, 6) != 0) return false;
+    if (app_timer_cnt_diff_compute(app_timer_cnt_get(), s_fail_ticks)
+        >= APP_TIMER_TICKS(backoff_ms())) {
+        s_have_fail  = false;   /* expired — give it another chance */
+        s_fail_count = 0;
+        return false;
+    }
+    return true;
+}
+
+/* One attempt on addr never produced a usable link. Escalate its backoff. */
+static void attempt_failed(const uint8_t *addr)
+{
+    if (s_have_fail && memcmp(addr, s_fail_addr, 6) == 0) {
+        if (s_fail_count < 255) s_fail_count++;
+    } else {
+        memcpy(s_fail_addr, addr, 6);
+        s_have_fail  = true;
+        s_fail_count = 1;
+    }
+    s_fail_ticks = app_timer_cnt_get();
+    NRF_LOG_WARNING("central: attempt %u never became usable — "
+                    "not auto-retrying for %u ms",
+                    (unsigned int)s_fail_count, (unsigned int)backoff_ms());
+}
+
+/* A link reached DISC_DONE, so whatever went wrong before is forgiven. */
+static void attempt_succeeded(void)
+{
+    s_have_fail  = false;
+    s_fail_count = 0;
+}
+
 /* ---- GATTC retry helpers ----------------------------------------------------- */
 
 /* Terminal discovery failure: log, disconnect, mark fault.  The disconnect
- * event handler cleans up and re-enters scanning. */
+ * event handler cleans up and re-enters scanning.
+ *
+ * The backoff is armed in the BLE_GAP_EVT_DISCONNECTED handler, not here: every
+ * failed attempt ends in a disconnect, so arming in both places would
+ * double-count and skip a backoff step. Leaving s_stage at DISC_IDLE is what
+ * tells that handler this attempt never became usable. */
 static void gattc_fail(void)
 {
-    NRF_LOG_WARNING("central: GATT discovery failed — disconnecting "
-                    "(suppressing it for 30 s)");
-    memcpy(s_fail_addr, s_target.addr, 6);
-    s_have_fail  = true;
-    s_fail_ticks = app_timer_cnt_get();
+    NRF_LOG_WARNING("central: GATT discovery failed — disconnecting");
     app_state_set_fault(1);  /* discovery fault */
     s_stage = DISC_IDLE;
     s_gattc_retries = 0;
@@ -427,6 +499,7 @@ static void cccd_subscribe(void)
 static void subscribed(void)
 {
     s_stage = DISC_DONE;
+    attempt_succeeded();   /* usable link — forgive any earlier failed attempts */
     NRF_LOG_INFO("central: subscribed — notifications active");
 
     /* Persist as last-connected only now, with notifications actually flowing.
@@ -695,9 +768,14 @@ static void policy_evaluate(void)
     int pick = connect_policy_choose(s_devs, s_ndev,
                                      s_have_saved ? &s_saved : NULL,
                                      ms_since_scan_start());
-    if (pick >= 0) {
-        connect_to(&s_devs[pick]);
-    }
+    if (pick < 0) return;
+
+    /* Chosen device is still cooling down from a failed attempt. Skip the
+     * automatic connect; it stays in the list so a watch-issued CONNECT can
+     * still override this. */
+    if (backoff_blocks(s_devs[pick].addr)) return;
+
+    connect_to(&s_devs[pick]);
 }
 
 static void policy_timer_cb(void *ctx)
@@ -708,16 +786,10 @@ static void policy_timer_cb(void *ctx)
 
 static void on_adv_report(const ble_gap_evt_adv_report_t *r)
 {
-    /* Still in the post-failure cooldown? Drop it before it can reach the list
-     * and be chosen again. */
-    if (s_have_fail && memcmp(r->peer_addr.addr, s_fail_addr, 6) == 0) {
-        if (app_timer_cnt_diff_compute(app_timer_cnt_get(), s_fail_ticks)
-            < DISC_FAIL_COOLDOWN_TICKS) {
-            return;
-        }
-        s_have_fail = false;   /* cooldown expired — give it another chance */
-    }
-
+    /* No backoff filtering here on purpose — see the note at the backoff
+     * definition. A device in backoff must stay in s_devs so it still shows up
+     * in LIST and the watch can pick it manually; only policy_evaluate()'s
+     * automatic pick is gated. */
     char name[FTMS_NAME_LEN];
     adv_name(r->data.p_data, (uint8_t)r->data.len, name, FTMS_NAME_LEN);
 
@@ -732,9 +804,11 @@ static void on_adv_report(const ble_gap_evt_adv_report_t *r)
     /* Dump the raw advertisement of anything LOUDER than the threshold, so a
      * nearby device that fails to classify can be read AD-structure by AD
      * structure. Gated on RSSI rather than name because a device whose local
-     * name is absent (or lives only in a scan response we never request, since
-     * we scan passively) would be filtered out by a name test — which is
-     * exactly the case we need to see. proto -1 means neither matcher fired:
+     * name lives in its scan response arrives here nameless in its primary
+     * advert, so a name test would filter out exactly the case we need to see.
+     * (nrf_ble_scan sets scan_params.active = 1, so scan responses ARE
+     * requested — they just arrive as their own separate report.)
+     * proto -1 means neither matcher fired:
      * compare what is actually on air against adv_has_uuid16()'s expectation
      * of AD type 0x02/0x03 carrying 0x1826. */
     if (r->rssi >= DIAG_ADV_DUMP_MIN_RSSI) {
@@ -756,15 +830,27 @@ static void on_adv_report(const ble_gap_evt_adv_report_t *r)
         int before = s_ndev;
         s_ndev = ftms_devlist_upsert(s_devs, s_ndev, &dev);
         if (s_ndev != before) {
+            /* The name is usually NOT here. A treadmill puts its service UUID
+             * in the primary advert and its name in the scan response, which
+             * arrives as a separate report — so first sight is normally
+             * nameless and the name is logged by the branch below when it
+             * lands. Don't read an empty name here as "no name available". */
             NRF_LOG_INFO("central: found \"%s\" rssi %d (%s)",
                          nrf_log_push(name), dev.rssi,
                          proto == MACHINE_PROTO_IFIT ? "iFit" : "FTMS");
         }
     } else if (name[0]) {
-        /* Name-only scan response: refresh the name of a known device. */
+        /* Name-only scan response: attach the name to a device we already
+         * classified from its primary advert. ftms_devlist_upsert() protects a
+         * captured name from later nameless adverts, so this sticks. */
         for (int i = 0; i < s_ndev; i++) {
             if (memcmp(s_devs[i].addr, r->peer_addr.addr, 6) == 0) {
+                bool was_empty = (s_devs[i].name[0] == '\0');
                 memcpy(s_devs[i].name, name, FTMS_NAME_LEN);
+                if (was_empty) {
+                    NRF_LOG_INFO("central: name for idx %d is \"%s\"",
+                                 i, nrf_log_push(name));
+                }
                 break;
             }
         }
@@ -829,6 +915,15 @@ static void ble_evt_handler(const ble_evt_t *p_evt, void *p_ctx)
         if (gap->conn_handle != s_conn_handle) break;
         NRF_LOG_INFO("central: disconnected (reason 0x%02X)",
                      (unsigned int)gap->params.disconnected.reason);
+        /* Single choke point for the failed-attempt backoff: every failed
+         * attempt ends here. s_stage still holds what the link achieved, so
+         * check it BEFORE the reset below. Reaching DISC_DONE means the link was
+         * usable and this is an ordinary drop — reconnect immediately. Anything
+         * less (a 0x3E establishment failure, or gattc_fail() having reset the
+         * stage) means it never became usable, so back off. */
+        if (s_stage != DISC_DONE) {
+            attempt_failed(s_target.addr);
+        }
         (void)app_timer_stop(m_ifit_timer);
         s_conn_handle = BLE_CONN_HANDLE_INVALID;
         s_proto = 0;
@@ -849,6 +944,11 @@ static void ble_evt_handler(const ble_evt_t *p_evt, void *p_ctx)
     case BLE_GAP_EVT_TIMEOUT:
         if (gap->params.timeout.src == BLE_GAP_TIMEOUT_SRC_CONN) {
             NRF_LOG_WARNING("central: connect timed out — rescanning");
+            /* No link was ever created, so no DISCONNECTED will arrive to arm
+             * the backoff — do it here. An advertiser we can see but never
+             * connect to would otherwise be retried every scan pass forever;
+             * one such device cost a wasted 5 s connect attempt mid-session. */
+            attempt_failed(s_target.addr);
             s_connecting = false;
             s_have_manual = false;   /* picked device gone; policy resumes */
             ble_central_scan_start();

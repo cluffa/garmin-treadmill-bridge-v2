@@ -96,7 +96,26 @@ three verified on hardware:
 
 ## Still open
 
-### 1. Unbounded tight reconnect loop on `0x3E` (highest priority)
+### 1. ~~Unbounded tight reconnect loop on `0x3E`~~ — FIXED
+
+Fixed with a per-address escalating backoff (1/2/4/8/16/30 s) armed on any
+attempt that never reached `DISC_DONE`, and cleared in `subscribed()`. A link
+that *did* become usable and then dropped is not a failed attempt, so recovery
+from a genuine treadmill power-cycle stays immediate.
+
+Two design points worth not undoing:
+- The gate lives in `policy_evaluate()`, **not** `on_adv_report()`. The earlier
+  cooldown filtered the advert, which also removed the device from `s_devs` —
+  so it would have vanished from `LIST` and the watch could not have picked it
+  manually even when a human explicitly asked. Now only the *automatic* pick is
+  suppressed; the device stays visible and manually selectable.
+- The backoff is armed **only** in `BLE_GAP_EVT_DISCONNECTED` (plus the connect
+  timeout, which produces no disconnect). Arming in `gattc_fail()` too would
+  double-count and skip a step, since every failed attempt ends in a disconnect.
+  `gattc_fail()` leaving `s_stage` at `DISC_IDLE` is what signals "never became
+  usable" to that handler.
+
+Escalation verified as 1/2/4/8/16/30/30 s. Original report follows.
 
 Observed four consecutive failures before the fifth attempt succeeded:
 ```
@@ -124,15 +143,36 @@ Root cause of the `0x3E` itself is **not** established. Candidates: radio
 contention from three concurrent radios; a stale link held by the treadmill after
 the board was reset out from under it; marginal RSSI (-60 to -70 observed).
 
-### 2. Advert names arrive empty — blocks the watch device picker
+### 2. ~~Advert names arrive empty — blocks the watch device picker~~
+### — MISDIAGNOSED. It was a misleading log line, not a picker blocker.
 
-Every scan line this session read `central: found "" rssi -60 (iFit)`, yet
-`I_TL` is known by connect time. `LIST` sent to the watch would therefore show
-blank names, making the `garmin_ctrl_app` picker unusable. Likely the name is in
-the **scan response** rather than the primary advert payload, and `adv_name()` in
-`ble_central.c` only parses the latter. Fix before relying on the picker.
+**Correction (2026-07-29).** The earlier entry here claimed `LIST` would show
+blank names and the `garmin_ctrl_app` picker would be unusable. That was wrong,
+and it was inferred from a log line rather than measured. The name pipeline works
+end to end:
 
-Not a blocker for the data field, which writes to `A6ED0004` and needs no names.
+1. The primary advert carries the service UUID but usually **no** name, so it
+   creates the `s_devs` entry nameless.
+2. The name arrives in the **scan response**, a separate report. `nrf_ble_scan`
+   sets `scan_params.active = 1`, so scan responses *are* requested — the
+   existing `else if (name[0])` branch in `on_adv_report()` attaches it by
+   address.
+3. `ftms_devlist_upsert()` already refuses to let a later nameless advert blank a
+   captured name (`if (d->name[0])`).
+
+The evidence was there all along: `central: connecting to "I_TL" (iFit)` — the
+name *was* in the list entry by connect time.
+
+The real problem was that `central: found "%s"` fires only on first sight, i.e.
+before the scan response lands, so it always printed `""` and read as "no name
+available". Fixed by commenting why first sight is nameless and adding a
+`central: name for idx N is "…"` line when a name is actually attached. A stale
+comment claiming "we scan passively" was also corrected — the SDK sets
+`active = 1` (`nrf_ble_scan.c:975`).
+
+Residual narrow race, not worth code today: a `LIST` issued in the window
+between the primary advert and the scan response would show that device
+nameless. A re-`LIST` fixes it.
 
 ### 3. ~~`A6ED0004` workout-frame writes are unlogged~~ — FIXED
 

@@ -227,6 +227,22 @@ had never been tested on hardware. Three are now confirmed; one is untested.
 
 ## Defects found during this run
 
+> **Resolution, added 2026-07-29 (after this run).** Findings 1–3 are closed;
+> the record below is left as written at the time.
+> - **1 (reconnect loop on `0x3E`) — FIXED.** Per-address escalating backoff
+>   (1/2/4/8/16/30 s) armed on any attempt that never reached `DISC_DONE`.
+>   Suppression sits in `policy_evaluate()`, not `on_adv_report()`, so a device
+>   in backoff stays in `LIST` and remains manually selectable.
+> - **2 (`A6ED0004` unlogged) — FIXED.** `wkt_log()`, throttled, and it flags
+>   malformed frames that were previously dropped in silence. It immediately
+>   earned its keep: it proved a real Garmin data field was writing well-formed
+>   frames during a free run, which was otherwise indistinguishable from the
+>   watch writing nothing at all.
+> - **3 (empty advert names) — MISDIAGNOSED, not a real defect.** Names do reach
+>   `LIST`; the *log line* printed the name at first sight, before the scan
+>   response carrying it arrived. See `docs/HANDOFF.md` item 2 for the full
+>   correction. Fixed the log, not the pipeline.
+
 1. **Unbounded tight reconnect loop on `0x3E`
    (`BLE_HCI_CONN_FAILED_TO_BE_ESTABLISHED`).** Observed four consecutive
    failures before the fifth attempt succeeded:
