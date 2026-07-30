@@ -202,6 +202,65 @@ static void ctrl_log_tx(const char *msg, void *ctx)
 
 /* ---- BLE event handling ----------------------------------------------------- */
 
+/* Log an incoming A6ED0004 workout frame.
+ *
+ * This path used to be completely silent, which made the single most important
+ * product path — watch sets a target, belt follows — impossible to observe. When
+ * nothing happened there was no way to tell "the watch is not writing frames"
+ * from "frames arrive but carry no speed target" (a free run, which
+ * workout_ctrl deliberately treats as ACT_NONE) from "frames arrive malformed
+ * and are silently dropped". Those three have completely different fixes.
+ *
+ * Frames arrive at the data field's compute() rate (~1 Hz), so logging every one
+ * would wrap the 8 KB RTT ring in minutes and bury everything else. Log when the
+ * decision-relevant prefix changes, plus a periodic heartbeat so a steady stream
+ * still proves liveness. */
+static void wkt_log(const uint8_t *d, uint16_t len)
+{
+    /* Bytes 0..8 are what decode_action() actually looks at: version,
+     * timerState, flags, intensity, targetType, targetLow, targetHigh. */
+    #define WKT_KEY_LEN   9
+    #define WKT_LOG_EVERY 60          /* ~1 min at 1 Hz when nothing changes */
+    static uint8_t  s_last[WKT_KEY_LEN];
+    static uint32_t s_count, s_since;
+    static bool     s_seen;
+
+    s_count++;
+
+    if (len < WORKOUT_FRAME_LEN || d[0] != WORKOUT_FRAME_VERSION) {
+        /* workout_ctrl drops these silently — say so at least once. */
+        if (!s_seen || ++s_since >= WKT_LOG_EVERY) {
+            s_since = 0;
+            s_seen  = true;
+            NRF_LOG_WARNING("ctrl_svc: wkt #%u MALFORMED len=%u v=%u "
+                            "(want len>=%u v=%u)",
+                            (unsigned int)s_count, (unsigned int)len,
+                            (unsigned int)(len ? d[0] : 0),
+                            (unsigned int)WORKOUT_FRAME_LEN,
+                            (unsigned int)WORKOUT_FRAME_VERSION);
+        }
+        return;
+    }
+
+    bool changed = !s_seen || memcmp(d, s_last, WKT_KEY_LEN) != 0;
+    if (!changed && ++s_since < WKT_LOG_EVERY) return;
+
+    memcpy(s_last, d, WKT_KEY_LEN);
+    s_since = 0;
+    s_seen  = true;
+
+    unsigned int lo = (unsigned int)(d[5] | (d[6] << 8));
+    unsigned int hi = (unsigned int)(d[7] | (d[8] << 8));
+
+    NRF_LOG_INFO("ctrl_svc: wkt #%u timer=%u flags=0x%02x intensity=%u",
+                 (unsigned int)s_count, (unsigned int)d[1],
+                 (unsigned int)d[2], (unsigned int)d[3]);
+    /* targetType 0 = speed; 0xFF = no structured step known. lo/hi are mm/s,
+     * and the belt target is their midpoint. */
+    NRF_LOG_INFO("ctrl_svc: wkt tgtType=%u lo=%u hi=%u mm/s",
+                 (unsigned int)d[4], lo, hi);
+}
+
 static void on_write(const ble_gatts_evt_write_t *w)
 {
     if (w->handle == s_rsp_handles.cccd_handle && w->len >= 2) {
@@ -213,6 +272,7 @@ static void on_write(const ble_gatts_evt_write_t *w)
     }
     /* Workout telemetry char: raw binary frame → shared control policy. */
     if (w->handle == s_wkt_handles.value_handle) {
+        wkt_log(w->data, w->len);
         workout_ctrl_on_frame(w->data, w->len);
         return;
     }

@@ -134,12 +134,24 @@ the **scan response** rather than the primary advert payload, and `adv_name()` i
 
 Not a blocker for the data field, which writes to `A6ED0004` and needs no names.
 
-### 3. `A6ED0004` workout-frame writes are unlogged
+### 3. ~~`A6ED0004` workout-frame writes are unlogged~~ — FIXED
 
-`ble_ctrl_svc.c` `on_write()` calls `workout_ctrl_on_frame()` with no
-`NRF_LOG`, while every sibling input logs (`rx "SCAN"`, `notifications on`). The
-single most important product path — watch sets target → belt follows — leaves no
-trace, which is why A3 had to be verified by reading RAM. Add a log line.
+`wkt_log()` in `ble_ctrl_svc.c` now logs incoming workout frames, and
+specifically flags **malformed** frames that `workout_ctrl_on_frame()` otherwise
+drops in silence. Logged on change of the decision-relevant prefix (bytes 0..8:
+version, timerState, flags, intensity, targetType, targetLow/High) plus a ~1 min
+heartbeat — never every frame, which at the data field's ~1 Hz `compute()` rate
+would wrap the 8 KB RTT ring and bury everything else.
+
+This exists to separate three failure modes that look identical from the outside
+and have completely different fixes:
+- the watch is not writing frames at all
+- frames arrive but carry no speed target (a free run — `ACT_NONE`, correct
+  behaviour, belt deliberately untouched)
+- frames arrive malformed and are dropped
+
+Expect `tgtType=0` for a speed target and `tgtType=255` when the watch knows of
+no structured step.
 
 ### 4. USB CDC never completes enumeration — firmware exonerated
 
