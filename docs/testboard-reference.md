@@ -28,7 +28,7 @@ hardware PWM blink).
 |-----|----------------|-------------------------------|------------------------------------------|
 | 0   | `Lnk:`         | `central_link`                | `D`=down, `S`=scanning, `C`=connecting, `U`=up |
 | 0   | `W:`           | `watch_connected`             | `+`=connected, `-`=not connected         |
-| 0   | `A:`           | `ant_broadcasting`            | `+`=broadcasting, `-`=not broadcasting   |
+| 0   | `A:`           | `ant_broadcasting`            | `+`=broadcasting, `-`=not broadcasting; `T`=broadcasting **commanded target speed** (SDM target-broadcast debug mode) |
 | 1   | `Belt:`        | `treadmill.speed_mps`         | Actual belt speed, formatted as km/h      |
 | 2   | `Targ:`        | `resolved_target_mps`         | Resolved target speed from workout_ctrl  |
 | 3   | `Act:`         | button cycle position         | Current short-press action (see below)   |
@@ -60,12 +60,29 @@ event dispatch inside an IRQ.
 | 1 | `CONN-NEXT`   | Connect to next available treadmill (`testboard_action_connect_next`) |
 | 2 | `INJECT 8.0`  | Inject a synthetic 15-byte workout frame (8.0 km/h target) into `workout_ctrl` |
 | 3 | `STOP`        | Stop/disconnect (`testboard_action_stop`)                       |
+| 4 | `SDM:TGT`     | Toggle footpod between actual belt speed and the commanded target speed (`sdm_broadcast_target`) — see below |
 
 SCAN, CONN-NEXT, and STOP are `__attribute__((weak))` stubs that the radio
 layer (M3) overrides. INJECT works standalone (no radios needed) — it builds
 a valid `A6ED0004` workout frame and feeds it directly to the platform-agnostic
 `workout_ctrl_on_frame()`, which resolves the target and calls
 `machine_set_speed()`.
+
+## SDM target-broadcast mode (debug aid)
+
+`SDM:TGT` toggles `app_state()->sdm_broadcast_target`. When on, the ANT
+footpod broadcasts the **commanded target** speed (`resolved_target_mps`,
+what `workout_ctrl`/ctrl-dispatch last told the treadmill) instead of the
+actual belt speed, and distance is integrated from that target so the trace
+is self-consistent. The OLED row 0 `A:` indicator turns `T` and the action
+label reads `SDM:TGT` / `SDM:ACT`.
+
+**Purpose:** score belt accuracy from the watch's .fit file. Run the same
+workout twice on the watch — once with the footpod in normal mode (the .fit
+speed trace is the *actual* belt response) and once in target mode (the trace
+is exactly what the bridge commanded) — and diff the two traces. The mode
+resets to actual at boot; toggling off re-seeds distance from the actual belt
+distance on the next broadcast.
 
 ## Buzzer chirps (passive buzzer, PWM on expansion board A3/D3)
 
@@ -82,6 +99,8 @@ duration distinguish the event:
 | Button short-press: CONN-NEXT| 1200 Hz   | 60 ms    |                            |
 | Button short-press: INJECT   | 2000 Hz   | 80 ms    |                            |
 | Button short-press: STOP     |  500 Hz   | 100 ms   |                            |
+| Button short-press: SDM:TGT  | 2400 Hz   |  80 ms   | Target broadcast ON        |
+| Button short-press: SDM:TGT  |  700 Hz   |  80 ms   | Target broadcast OFF       |
 | Button long-press (reset)    |  400 Hz   | 200 ms   | Then 250 ms delay before NVIC reset |
 
 ## Rendering tick

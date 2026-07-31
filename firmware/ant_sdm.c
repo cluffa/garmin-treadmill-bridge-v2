@@ -44,6 +44,31 @@ static const uint8_t PAGE_81[8] = {0x51,0xFF,0xFF,0x01,0xFF,0xFF,0xFF,0xFF};
 
 static uint8_t s_slot;    /* position in the CYCLE_LEN pattern */
 
+/* ---- Target-broadcast debug mode --------------------------------------------
+ *
+ * When app_state()->sdm_broadcast_target is set (testboard button action
+ * SDM:TGT), the footpod broadcasts the bridge's resolved target speed
+ * (resolved_target_mps) instead of the actual belt speed, and distance is
+ * integrated from that target. The watch then records exactly what the
+ * bridge commanded: run the same workout in normal mode for the actual
+ * belt trace and diff the two .fit files to score belt accuracy.
+ *
+ * Distance is integrated from elapsed_s deltas on page-1 slots (page 1 goes
+ * out ~3.76 Hz, so the delta is 0 or 1 s per encode), which stalls the
+ * trace whenever the belt state stops updating (e.g. link loss).
+ *
+ * ⚠ That means this mode does NOT currently work with no treadmill connected,
+ * which is one of the things it was wanted for. treadmill.elapsed_s is filled
+ * in only by FTMS treadmill-data notifications (core/ftms_parse.c) and is
+ * zeroed on disconnect (ble_central.c), so with no link the delta is always 0:
+ * broadcast distance stays flat and the page-1 time field (elapsed_s % 256,
+ * core/ant_sdm_encode.c) stays pinned at 0. Speed is still carried. To make
+ * the standalone case work, integrate from a local monotonic tick (the
+ * app_timer heartbeat) and synthesise the time field from it. */
+static float s_tgt_dist_m   = 0.0f;   /* target-integrated distance, m */
+static bool  s_tgt_seeded   = false;  /* seeded from actual distance on first page */
+static uint8_t s_prev_elapsed = 0;    /* last elapsed_s seen on a page-1 slot */
+
 /* ---- ANT event observer callback ------------------------------------------- */
 static void ant_evt_handler(ant_evt_t *p_evt, void *p_context)
 {
@@ -63,7 +88,33 @@ NRF_SDH_ANT_OBSERVER(m_sdm_observer, APP_ANT_OBSERVER_PRIO, ant_evt_handler, NUL
 void ant_sdm_on_tx_event(void)
 {
     uint8_t pg[8];
-    const treadmill_state_t *ts = &app_state()->treadmill;
+    app_state_t *st = app_state();
+
+    /* Target-broadcast debug mode: override the belt state with the
+     * commanded target. Applies to every page (1 and 2 both carry speed). */
+    treadmill_state_t ts_target;
+    const treadmill_state_t *ts = &st->treadmill;
+    if (st->sdm_broadcast_target) {
+        ts_target = *ts;
+        ts_target.speed_mps = st->resolved_target_mps;
+        if (!s_tgt_seeded) {
+            s_tgt_dist_m = ts_target.distance_m;   /* start where actual is */
+            s_tgt_seeded = true;
+        }
+        if (s_slot < P2_FIRST) {
+            uint8_t now = (uint8_t)ts_target.elapsed_s;
+            uint8_t delta = (uint8_t)(now - s_prev_elapsed); /* wraps mod 256 */
+            s_prev_elapsed = now;
+            if (delta > 0 && delta <= 2) {   /* ~3.76 Hz pages: 0 or 1 s */
+                s_tgt_dist_m += ts_target.speed_mps * (float)delta;
+            }
+        }
+        ts_target.distance_m = s_tgt_dist_m;
+        ts = &ts_target;
+    } else {
+        /* Re-seed from the actual distance next time target mode is enabled. */
+        s_tgt_seeded = false;
+    }
 
     if (s_slot == P80_SLOT) {
         memcpy(pg, PAGE_80, sizeof(pg));

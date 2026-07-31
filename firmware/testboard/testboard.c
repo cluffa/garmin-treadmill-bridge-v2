@@ -67,6 +67,7 @@ typedef enum {
     TEST_ACTION_CONNECT_NEXT,
     TEST_ACTION_INJECT,
     TEST_ACTION_STOP,
+    TEST_ACTION_SDM_TGT,
     TEST_ACTION_COUNT
 } test_action_t;
 
@@ -180,6 +181,17 @@ static void on_button_short(void)
         hw_buzzer_chirp(500, 100);
         testboard_action_stop();
         break;
+    case TEST_ACTION_SDM_TGT: {
+        /* Toggle the ANT footpod between actual belt speed and the
+         * commanded target speed (debug aid for scoring belt accuracy
+         * from the watch's .fit file). */
+        app_state_t *st = app_state();
+        st->sdm_broadcast_target = !st->sdm_broadcast_target;
+        hw_buzzer_chirp(st->sdm_broadcast_target ? 2400 : 700, 80);
+        NRF_LOG_INFO("testboard: SDM target broadcast %s",
+                     st->sdm_broadcast_target ? "ON" : "OFF");
+        break;
+    }
     case TEST_ACTION_COUNT:
     default:
         /* Sentinel — not a real action; should never be reached because
@@ -280,6 +292,8 @@ static const char *action_label(test_action_t a)
     case TEST_ACTION_CONNECT_NEXT: return "CONN-NEXT";
     case TEST_ACTION_INJECT:       return "INJECT 8.0";
     case TEST_ACTION_STOP:         return "STOP";
+    case TEST_ACTION_SDM_TGT:
+        return app_state()->sdm_broadcast_target ? "SDM:TGT" : "SDM:ACT";
     case TEST_ACTION_COUNT:
     default:                       return "?";
     }
@@ -375,11 +389,13 @@ static void render_tick_cb(void *ctx)
     /* ---- Compose OLED lines --------------------------------------------- */
     ssd1306_clear();
 
-    /* Row 0: link status + watch + ANT */
+    /* Row 0: link status + watch + ANT (A:T = broadcasting commanded
+     * target speed in SDM target-broadcast debug mode) */
     snprintf(line, sizeof(line), "Lnk:%s W:%c A:%c",
              link_label(st->central_link),
              st->watch_connected  ? '+' : '-',
-             st->ant_broadcasting ? '+' : '-');
+             st->sdm_broadcast_target ? 'T'
+                 : (st->ant_broadcasting ? '+' : '-'));
     ssd1306_text(0, 0, line);
 
     /* Row 1: belt speed */

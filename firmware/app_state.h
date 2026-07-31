@@ -34,8 +34,9 @@ typedef struct {
     link_state_t      central_link;       /* treadmill BLE central state */
     char              treadmill_name[24]; /* central connected-device name */
     bool              watch_connected;    /* BLE peripheral (ctrl svc) link */
-    bool              ant_broadcasting;   /* ANT SDM footpod is active */
-    float             resolved_target_mps;/* last target workout_ctrl commanded */
+    bool              ant_broadcasting;    /* ANT SDM footpod is active */
+    bool              sdm_broadcast_target;/* debug: footpod sends commanded target speed, not actual belt speed */
+    float             resolved_target_mps; /* last target workout_ctrl commanded */
     uint32_t          last_fault_code;    /* 0 = no fault */
 } app_state_t;
 
