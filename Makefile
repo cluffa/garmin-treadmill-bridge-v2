@@ -7,7 +7,7 @@
 # anything the user sets.)
 
 .PHONY: host-test firmware dfu settings flash-dfu flash-full flash-sd flash-app \
-        dfu-enter reset clean help mock-bridge mock-test
+        dfu-enter reset clean help mock-bridge mock-test sideload
 
 GNU_INSTALL_ROOT ?= /Users/alex/.platformio/packages/toolchain-gccarmnoneeabi/bin/
 GNU_VERSION      ?= 7.2.1
@@ -28,6 +28,7 @@ help:
 	@echo "  make mock-bridge            run the macOS mock bridge (debug the watch data field)"
 	@echo "  make firmware               build the nRF52840 image"
 	@echo "Watch (Connect IQ) — see watch/README.md:"
+	@echo "  make sideload               push the built .prg to the watch over MTP (watch plugged in)"
 	@echo "  watch/garmin_data_field     writes workout targets to A6ED0004"
 	@echo "  watch/garmin_ctrl_app       SCAN/CONNECT picker UI (A6ED0002/0003)"
 	@echo "Package / flash (see docs/flashing.md — these consume an existing build):"
@@ -61,6 +62,34 @@ mock-test:
 mock-bridge:
 	$(MAKE) -C test/mock
 	cd test/mock && ./mock_bridge.py
+
+# Sideload a built Connect IQ app onto the fenix 8 over MTP. The watch has no
+# USB mass-storage mode (/Volumes/GARMIN never mounts), so this uses libmtp
+# (brew install libmtp). Like the flash targets it CONSUMES an existing build:
+# rebuild with the monkeyc invocation in watch/README.md.
+#   make sideload                          # data field (main product path)
+#   make sideload CIQ_PRJ=garmin_ctrl_app  # once that project is built
+# The Apps folder id is resolved live from mtp-filetree — libmtp's name paths
+# fail on Garmin ("Parent folder could not be found") and mtp-sendfile has no
+# -f flag, so a bare numeric id is the only reliable form. Re-runs can leave
+# duplicate app.prg files: Garmin's MTP delete is unreliable (PTP error 2002)
+# and its object enumeration is stale (mtp-files can report ids mtp-filetree
+# no longer shows), so the previous-file lookup below is best-effort and only
+# warns. Manual cleanup: mtp-delfile -n <older-id> (retry if it 2002s).
+CIQ_PRJ ?= garmin_data_field
+
+sideload:
+	@test -f watch/$(CIQ_PRJ)/out/app.prg || { echo "error: watch/$(CIQ_PRJ)/out/app.prg missing — build it first (watch/README.md)"; exit 1; }
+	@mtp-detect >/dev/null 2>&1 || { echo "error: watch not found over USB (MTP mode?)"; exit 1; }
+	@apps=$$(mtp-filetree 2>/dev/null | awk '$$1 ~ /^[0-9]+$$/ && $$2=="Apps" {print $$1; exit}'); \
+	  test -n "$$apps" || { echo "error: no GARMIN/Apps folder on the watch"; exit 1; }; \
+	  old=$$(mtp-files 2>/dev/null | awk -v apps="$$apps" '/File ID: /{id=$$3; want=0} /Filename: app\.prg/{want=1} want && /Parent ID: / && $$3==apps {print id; exit}'); \
+	  test -z "$$old" || echo "note: GARMIN/Apps already reports an app.prg (id $$old) — this run adds another copy; the watch installs the newest (MTP deletes are unreliable here, so no auto-remove)"; \
+	  echo "sideload watch/$(CIQ_PRJ)/out/app.prg -> GARMIN/Apps (folder id $$apps)"; \
+	  mtp-sendfile watch/$(CIQ_PRJ)/out/app.prg "$$apps" 2>/dev/null | grep -q 'New file ID' || { echo "error: mtp-sendfile failed"; exit 1; }
+	@newer=$$(find watch/$(CIQ_PRJ)/source watch/$(CIQ_PRJ)/resources -type f -newer watch/$(CIQ_PRJ)/out/app.prg 2>/dev/null | head -1); \
+	  test -z "$$newer" || echo "note: $$newer is newer than the .prg — rebuild before testing (watch/README.md)"
+	@echo "ok — unplug the watch; it installs GARMIN/Apps on eject/boot"
 
 firmware:
 	$(MAKE) -C firmware $(FW_MAKE_ARGS)

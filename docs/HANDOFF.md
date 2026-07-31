@@ -165,8 +165,10 @@ work" report is fully explained — it never worked.
   S340 v7.0.1 API headers. Concrete paths in `CLAUDE.md`.
 - **Flashing:** no onboard debugger — SWD via a Pico/CMSIS-DAP + `pyocd` (not
   `nrfjprog`), USB via `nrfutil`.
-- **Watch:** Connect IQ SDK for rebuilding `watch/`; sideload the `.prg` over USB
-  mass storage.
+- **Watch:** Connect IQ SDK for rebuilding `watch/`; sideload the `.prg` over
+  **MTP** with libmtp (`mtp-sendfile`) — the fenix 8 has no mass-storage mode,
+  `/Volumes/GARMIN` never mounts. Full procedure in `watch/README.md`
+  §Sideloading.
 
 ---
 
@@ -467,14 +469,14 @@ Everything needed is in place. **No Connect IQ rebuild is required**: the
 prebuilt binaries already embed the correct `D344` UUIDs, verified with
 `strings`.
 
-1. **Sideload the data field.** Connect the fenix 8 Solar 51mm over USB (mass
-   storage) and copy:
-   ```
-   $OLD/garmin_data_field/out/app.prg  →  GARMIN/APPS/ on the watch
-   ```
-   `fenix8solar51mm` is already in the manifest's product list (alongside fr965,
-   fr955, fr970). Optionally also `$OLD/garmin_ctrl_app/out/ctrl.prg` for the
-   picker — but see open defect 2; names will be blank.
+1. **Sideload the data field.** The fenix 8 has **no USB mass-storage mode**
+   (`/Volumes/GARMIN` never mounts) — sideload over MTP with libmtp:
+   `mtp-sendfile <prg> <Apps-folder-id>`, where the numeric folder id comes
+   from `mtp-filetree` (name paths and `-f` flags fail — see `watch/README.md`
+   §Sideloading for the full procedure and pitfalls). `fenix8solar51mm` is
+   already in the manifest's product list (alongside fr965, fr955, fr970).
+   Optionally also build and sideload the ctrl app from `watch/garmin_ctrl_app`
+   for the picker — but see open defect 2; names will be blank.
 2. **Add the data field to a run activity's data screen.**
 3. ⚠ **Load and start a structured workout with a SPEED target.** This is a hard
    prerequisite, not a nicety. `core/workout_ctrl.c` `decode_action()`:

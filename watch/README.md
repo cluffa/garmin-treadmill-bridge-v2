@@ -88,15 +88,72 @@ are git-ignored — they were deliberately not vendored.
 
 ## Sideloading
 
-Requires **USB mass-storage mode** — there is no over-the-air path for a
-developer build (only store-distributed apps install wirelessly). Connect the
-watch by USB, then:
+There is no over-the-air path for a developer build (only store-distributed
+apps install wirelessly) — sideloading means copying the `.prg` onto the watch
+over USB. **The fenix 8 has no USB mass-storage mode**: `/Volumes/GARMIN` never
+mounts, so the old `cp out/app.prg /Volumes/GARMIN/GARMIN/APPS/` recipe is dead
+on this watch. It speaks **MTP** instead.
 
-```
-cp out/app.prg /Volumes/GARMIN/GARMIN/APPS/
+### Prerequisites
+
+- `libmtp` tools (`mtp-detect`, `mtp-filetree`, `mtp-sendfile`, …) — installed
+  on this machine at `/opt/homebrew/bin` (`brew install libmtp` if missing).
+- Watch connected by USB. Verify with `mtp-detect` — you should see
+  `Garmin: Fenix 8 Solar Sapphire`.
+
+### Procedure
+
+In the repo root the whole flow is one command (consumes the existing build;
+`CIQ_PRJ=garmin_ctrl_app` for the picker once that project is built):
+
+```sh
+make sideload
 ```
 
-Eject cleanly, then add the field to a run activity's data screen.
+What it does, step by step (also useful when doing it by hand or verifying):
+
+```sh
+# 1. Find the Apps folder id (the numeric id under GARMIN; it can vary between
+#    devices, so always look it up rather than hardcoding):
+mtp-filetree
+#    16777216 GARMIN
+#      16777227 Apps        <-- this id (was 16777227 on 2026-07-31)
+
+# 2. Send the built app by NUMERIC folder id (see pitfalls for why):
+mtp-sendfile out/app.prg 16777227
+#    ... Sending file...
+#    New file ID: 16779871
+
+# 3. Verify it landed at the Apps level (NOT inside Apps/DATA):
+mtp-filetree | grep -i app.prg
+```
+
+Then unplug the watch — it scans `GARMIN/Apps` on eject/boot and installs the
+app — and add the field to a run activity's data screen. If the watch already
+has a copy of the app installed, the sideload updates it.
+
+### Pitfalls (all observed 2026-07-31)
+
+- **`mtp-sendfile` (libmtp 1.1.23) has no `-f` folder flag.** `-f 16777227` is
+  parsed as the *local* filename and dies with `-f: stat: No such file or
+  directory` before anything transfers.
+- **Path destinations fail.** `mtp-sendfile out/app.prg /GARMIN/Apps/app.prg`
+  errors with `Parent folder could not be found` — the name walk
+  (`lookup_folder_id` in libmtp's `pathutils.c`) does not match Garmin's tree.
+  Pass the bare numeric folder id instead; `parse_path` treats a number as an
+  item id directly.
+- **`GARMIN/Apps/DATA/app.prg` is the previous install**, not a sideload
+  target. A successful sideload sits at the Apps level as a sibling of
+  `OUT.BIN`.
+- **Re-runs can leave duplicate `app.prg` files.** Garmin's MTP delete is
+  unreliable (PTP error 2002) and its object enumeration is stale (`mtp-files`
+  can report ids `mtp-filetree` no longer shows), so `make sideload` does not
+  auto-remove the previous copy — it warns instead. The watch installs the
+  newest copy (same app id), so duplicates are dev-noise, not corruption. To
+  clean up: `mtp-delfile -n <older-id>` and retry if it errors.
+- Only `garmin_data_field` has been built in this repo
+  (`watch/garmin_data_field/out/app.prg`); `garmin_ctrl_app` needs its own
+  `monkeyc` build before it can be sideloaded.
 
 ## A note on the ctrl app's picker
 
