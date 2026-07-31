@@ -1,7 +1,13 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.9"
-# dependencies = ["bless"]
+# Pinned, not "bless": the advertising behaviour this whole design rests on
+# (prioritize_local_name, the `len(name) > 10` drop-the-service-UUID rule —
+# see the comment on ADV_NAME below) is a bless 0.3.0 corebluetooth/server.py
+# implementation detail, not a documented contract. An unpinned upgrade can
+# change or remove it silently; the watch would simply stop finding the mock,
+# with nothing here to explain why.
+# dependencies = ["bless==0.3.0"]
 # ///
 """Mock nRF52840 bridge: a macOS BLE peripheral for debugging the watch data field.
 
@@ -28,6 +34,7 @@ from bless import (
     GATTAttributePermissions as Perm,
 )
 
+import link_state
 import wkt_decode as wkt
 
 # Must match firmware/ble_ctrl_svc.c. test/check_uuid_contract.py enforces this.
@@ -35,6 +42,12 @@ CTRL_SVC = "A6ED0001-D344-460A-8075-B9E8EC90D71B"
 CTRL_CHR = "A6ED0002-D344-460A-8075-B9E8EC90D71B"  # write (ctrl grammar)
 CTRL_RSP = "A6ED0003-D344-460A-8075-B9E8EC90D71B"  # notify (D/E/S frames)
 CTRL_WKT = "A6ED0004-D344-460A-8075-B9E8EC90D71B"  # write (workout telemetry)
+
+# The 8-hex-char prefix (service base + characteristic alias) that identifies
+# a write as the workout characteristic. Derived from CTRL_WKT itself, not
+# repeated as a second literal, so on_write() cannot silently drift from the
+# constant above and log every real workout frame as "(ignored)".
+CTRL_WKT_PREFIX = CTRL_WKT.split("-", 1)[0]
 
 # <= 10 chars: bless drops service UUIDs from the advert for longer names when
 # prioritize_local_name is true. We pass False anyway, but a short name keeps
@@ -76,13 +89,12 @@ frame_no = 0      # written only from the CoreBluetooth callback thread
 _last_write = None      # monotonic time of the last characteristic write, ever
 _last_log = time.monotonic()   # monotonic time of the last line the loop printed
 
-IDLE_LOG_S = 10.0       # heartbeat cadence while frames are flowing
-WAIT_LOG_S = 30.0       # quieter heartbeat before the watch ever appears
-# A steady free run legitimately goes minutes without a write (the field sends on
-# change), and the gate run showed a 35 s gap while plainly connected. This window
-# is deliberately far larger than that — it exists to clear the latched command
-# between sessions, not to track the link precisely.
-STALE_S = 120.0
+# Cadence/timeout constants and the actual link-state decision live in
+# link_state.py — a pure module (no bless/ctypes/I-O) so it is unit-testable
+# without bless installed. See test/mock/test_link_state.py.
+IDLE_LOG_S = link_state.IDLE_LOG_S
+WAIT_LOG_S = link_state.WAIT_LOG_S
+STALE_S = link_state.STALE_S
 
 
 def log(tag: str, msg: str) -> None:
@@ -104,7 +116,7 @@ def on_write(characteristic, value: bytearray) -> None:
     _last_write = _last_log = time.monotonic()
 
     uuid = str(characteristic.uuid).upper()
-    if not uuid.startswith("A6ED0004"):
+    if not uuid.startswith(CTRL_WKT_PREFIX):
         # 0002 exists so service discovery matches the firmware's table; the
         # ctrl grammar is deliberately not emulated. Log and move on.
         log("CTRL", f"{uuid[:8]} {bytes(value).hex()}  (ignored)")
@@ -135,6 +147,16 @@ async def main() -> None:
     probe.probe_reset()
 
     server = BlessServer(name=ADV_NAME)
+    # No read_request_func: none of the three characteristics below carry
+    # Perm.readable, matching firmware/ble_ctrl_svc.c's GATT table, which
+    # declares all three write/notify-only (no `.read` in any char_props).
+    # bless does not require a readable permission to create a characteristic
+    # (verified empirically), so this is a straight permissions fix, not a
+    # workaround. Previously all three were Perm.readable with
+    # read_request_func left None: CoreBluetooth honours the ATT permission
+    # bit independently of GATT properties, so it dispatched real reads from
+    # tools like nRF Connect/LightBlue straight into a callback that raises
+    # BlessError("Server: Read Callback is undefined") and never completes.
     server.read_request_func = None
     server.write_request_func = on_write
 
@@ -145,16 +167,16 @@ async def main() -> None:
     await server.add_new_characteristic(
         CTRL_SVC, CTRL_CHR,
         Props.write | Props.write_without_response, None,
-        Perm.readable | Perm.writeable,
+        Perm.writeable,
     )
     await server.add_new_characteristic(
         CTRL_SVC, CTRL_RSP,
-        Props.notify, None, Perm.readable,
+        Props.notify, None, Perm(0),
     )
     await server.add_new_characteristic(
         CTRL_SVC, CTRL_WKT,
         Props.write | Props.write_without_response, None,
-        Perm.readable | Perm.writeable,
+        Perm.writeable,
     )
 
     # prioritize_local_name=False is REQUIRED, not a preference. bless defaults
@@ -186,7 +208,11 @@ async def main() -> None:
                 log("KEEP", f"-> re-assert {speed:.1f} km/h")
                 continue
 
-            if _last_write is not None and not linked:
+            # Pure decision (no BLE/ctypes/I-O) — see link_state.py and
+            # test/mock/test_link_state.py. This loop only acts on the result.
+            decision = link_state.decide(now, _last_write, linked, _last_log)
+
+            if decision == link_state.LINK:
                 linked = True
                 _last_log = now
                 log("LINK", "frames arriving - watch attached (inferred from "
@@ -194,17 +220,20 @@ async def main() -> None:
                             "and the data field never subscribes)")
                 continue
 
-            if linked and now - _last_write >= STALE_S:
+            if decision == link_state.STALE:
                 linked = False
-                # Also clear _last_write, not just `linked`: the next branch up
-                # re-links as soon as `_last_write is not None`, so leaving the
-                # old timestamp in place makes it immediately true again on the
-                # very next tick, and then true forever (the timestamp only
-                # gets older) — an infinite 1 Hz oscillation between "frames
-                # arriving" and this branch, calling probe_reset() on every
-                # other tick instead of once. Clearing it returns to the exact
-                # pre-watch "no write ever seen" state, so a real new frame is
-                # required before the mock claims a link again.
+                # Also clear _last_write, not just `linked`: the next tick's
+                # decide() call re-links as soon as `_last_write is not None`,
+                # so leaving the old timestamp in place makes it immediately
+                # true again on the very next tick, and then true forever (the
+                # timestamp only gets older) — an infinite 1 Hz oscillation
+                # between "frames arriving" and this branch, calling
+                # probe_reset() on every other tick instead of once. Clearing
+                # it returns to the exact pre-watch "no write ever seen"
+                # state, so a real new frame is required before the mock
+                # claims a link again. (Regression-tested in
+                # test_link_state.py: a stale transition followed by
+                # continued silence must not re-link or reset repeatedly.)
                 _last_write = None
                 # Drop the latched command so a stale keepalive does not survive
                 # into the next session.
@@ -215,9 +244,9 @@ async def main() -> None:
                             f"is gone; probe reset")
                 continue
 
-            if now - _last_log >= (IDLE_LOG_S if linked else WAIT_LOG_S):
+            if decision in (link_state.IDLE, link_state.WAIT):
                 _last_log = now
-                if linked:
+                if decision == link_state.IDLE:
                     log("idle", "(no write - field sends on change only)")
                 else:
                     log("wait", "no frames yet - start a run activity with the "
