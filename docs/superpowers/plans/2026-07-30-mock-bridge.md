@@ -336,6 +336,7 @@ Create `test/mock/workout_probe.c`:
  * Lives in test/mock/, not core/ — the core/ purity invariant is untouched.
  */
 #include <stdbool.h>
+#include <stddef.h>   /* NULL — not guaranteed by stdbool.h/stdint.h on Apple clang */
 #include <stdint.h>
 
 #include "machine.h"
@@ -732,8 +733,8 @@ def _action_str(act: int) -> str:
 
 def on_write(characteristic, value: bytearray) -> None:
     """bless dispatches every characteristic write here."""
-    global _last_event, frame_no
-    _last_event = time.monotonic()
+    global _last_write, _last_log, frame_no
+    _last_write = _last_log = time.monotonic()
 
     uuid = str(characteristic.uuid).upper()
     if not uuid.startswith("A6ED0004"):
@@ -770,39 +771,92 @@ At the top of `main()`, before constructing the server:
     probe.probe_reset()
 ```
 
+and **replace the whole `connected` / `is_connected()` link-state mechanism from Task 1**, which the hardware gate proved cannot work here.
+
+> **Why this changed.** The 2026-07-30 gate run connected a real watch and received
+> four frames, but no `LINK` line ever printed. `bless`'s `is_connected()` on the
+> CoreBluetooth backend reports *subscribed centrals*, and the data field
+> deliberately never subscribes to `A6ED0003` (`watch/README.md`) — so it is
+> structurally always `False` for this peer. The same run showed a legitimate
+> **35-second gap** between frames while connected, because the field writes only
+> on change, so a short write-gap timeout would produce false disconnects. Link
+> state is therefore *inferred* from traffic on a generous window, and the log says
+> so rather than claiming a connection it cannot observe.
+
+Replace the `connected = False` initialiser above the loop with:
+
+```python
+    linked = False
+```
+
 and replace the body of the `while True:` loop with:
 
 ```python
             await asyncio.sleep(1.0)
+            now = time.monotonic()
 
-            now = await server.is_connected()
-            if now != connected:
-                connected = now
-                _last_event = time.monotonic()
-                if now:
-                    log("LINK", "central connected")
-                else:
-                    # Drop the latched command so a stale keepalive does not
-                    # survive into the next session.
-                    with _probe_lock:
-                        probe.probe_reset()
-                    log("LINK", "central disconnected - probe reset")
-                continue
-
-            # The firmware calls workout_ctrl_tick() at ~1 Hz; matching that
-            # here makes the ~30 s keepalive re-assert show up exactly as it
-            # would on hardware.
+            # The firmware calls workout_ctrl_tick() at ~1 Hz; matching that here
+            # makes the ~30 s keepalive re-assert show up exactly as it would on
+            # hardware. It runs whether or not a watch is attached, because the
+            # latched command is what the keepalive re-asserts.
             with _probe_lock:
                 act = probe.probe_tick()
                 speed = probe.probe_last_speed()
             if act == 1:
-                _last_event = time.monotonic()
+                _last_log = now
                 log("KEEP", f"-> re-assert {speed:.1f} km/h")
                 continue
 
-            if connected and time.monotonic() - _last_event >= IDLE_LOG_S:
-                _last_event = time.monotonic()
-                log("idle", "(no write - field sends on change only)")
+            if _last_write is not None and not linked:
+                linked = True
+                _last_log = now
+                log("LINK", "frames arriving - watch attached (inferred from "
+                            "traffic; bless is_connected() is subscription-based "
+                            "and the data field never subscribes)")
+                continue
+
+            if linked and now - _last_write >= STALE_S:
+                linked = False
+                # Drop the latched command so a stale keepalive does not survive
+                # into the next session.
+                with _probe_lock:
+                    probe.probe_reset()
+                _last_log = now
+                log("LINK", f"no frames for {STALE_S:.0f}s - assuming the watch "
+                            f"is gone; probe reset")
+                continue
+
+            if now - _last_log >= (IDLE_LOG_S if linked else WAIT_LOG_S):
+                _last_log = now
+                if linked:
+                    log("idle", "(no write - field sends on change only)")
+                else:
+                    log("wait", "no frames yet - start a run activity with the "
+                                "data field on a screen")
+```
+
+This needs three module-level values in place of Task 1's single `_last_event`. Replace that definition with:
+
+```python
+# Written from the CoreBluetooth callback thread, read from the asyncio loop.
+# Bare assignments to a float/None are atomic under the GIL, so no lock is needed.
+_last_write = None      # monotonic time of the last characteristic write, ever
+_last_log = time.monotonic()   # monotonic time of the last line the loop printed
+
+IDLE_LOG_S = 10.0       # heartbeat cadence while frames are flowing
+WAIT_LOG_S = 30.0       # quieter heartbeat before the watch ever appears
+# A steady free run legitimately goes minutes without a write (the field sends on
+# change), and the gate run showed a 35 s gap while plainly connected. This window
+# is deliberately far larger than that — it exists to clear the latched command
+# between sessions, not to track the link precisely.
+STALE_S = 120.0
+```
+
+and delete Task 1's `IDLE_LOG_S = 10.0` and `_last_event` lines so there is one definition of each. Every `_last_event = time.monotonic()` in `on_write` becomes:
+
+```python
+    global _last_write, _last_log
+    _last_write = _last_log = time.monotonic()
 ```
 
 - [ ] **Step 4: Verify it starts and reports a missing library cleanly**
@@ -821,9 +875,13 @@ make -C test/mock
 cd test/mock && ./mock_bridge.py
 ```
 
-Expected: `ADV` lines, then it sits idle. Leave it running for Task 6.
+Expected: `ADV` lines, then a `wait` heartbeat every 30 s until a watch appears. Leave it running for Task 6.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Verify the link-state logic without a watch**
+
+The link inference is the part the hardware gate proved the plan had wrong, so exercise it directly rather than trusting it. With the mock running, in another terminal call `on_write` by hand is not possible — instead temporarily set `STALE_S = 5.0` and `WAIT_LOG_S = 2.0` in a scratch copy, feed one synthetic frame through `on_write` by importing the module, and confirm the sequence `LINK frames arriving` → `idle` → `LINK no frames … probe reset`. Restore the real values afterwards. Report what you observed; do not commit the scratch values.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add test/mock/mock_bridge.py
@@ -831,7 +889,11 @@ git commit -m "test(mock): decode 0004 writes and report the real belt action
 
 Each frame is decoded, fed to core/workout_ctrl.c through the probe, and
 logged with the command the firmware would actually have issued. A 1 Hz tick
-surfaces the ~30 s keepalive; disconnect resets the latched command."
+surfaces the ~30 s keepalive.
+
+Link state is inferred from write traffic, not from bless's is_connected():
+the 2026-07-30 gate run showed that reports subscribed centrals, and the data
+field never subscribes to A6ED0003, so it is always False for this peer."
 ```
 
 ---
