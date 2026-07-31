@@ -1,48 +1,182 @@
-# Handoff — 2026-07-29
+# Handoff — 2026-07-31
 
-## Update — 2026-07-30: mock bridge, and the next thing to fix
+**Everything below the "Historical" divider is a prior session's log, kept for
+its debugging reference material. This top section is the current state.**
 
-Since the state below was written, branch `feat/mock-bridge` added a macOS-hosted
-mock of the bridge's BLE peripheral role (`test/mock/mock_bridge.py` +
-`test/mock/link_state.py` + `test/mock/wkt_decode.py`), so
-`watch/garmin_data_field` can be iterated on without the nRF52840 in the loop.
-It advertises the same `A6ED0001` control service the firmware does, decodes
-every 15-byte workout frame written to `A6ED0004`, and reports the belt action
-the real firmware would take — that prediction comes from `core/workout_ctrl.c`
-itself, compiled to `libworkout_probe.so` and loaded through ctypes, so it
-cannot drift into a second implementation of the belt-control decision. See
-`watch/README.md` ("Debugging the data field without the hardware bridge") and
-`docs/superpowers/specs/2026-07-30-mock-bridge-design.md` (with its amendment)
-for the full design and how it diverged from the original plan.
+## What this is
 
-Run it with:
+An nRF52840 (Seeed XIAO, SoftDevice S340) bridge that lets a Garmin watch drive a
+treadmill: a Connect IQ data field sends the current structured-workout step to
+the bridge over BLE, the bridge translates it into FTMS or iFit belt commands,
+and broadcasts back as an ANT footpod so the watch records real pace.
+
+## Quick start
 
 ```sh
-make mock-bridge
+make host-test     # everything that runs without hardware (see Test status)
+make firmware      # build the nRF52840 image
+make mock-bridge   # macOS BLE peripheral that impersonates the bridge
 ```
 
-Test status: `make host-test` now runs **9 host suites + 3 mock suites**, all
-green (the "9/9" further down this file is what it was *before* this branch;
-the mock suites — `test_workout_probe.py`, `test_wkt_decode.py`,
-`test_link_state.py` — are additional, gated by `test/mock/Makefile`'s `test`
-target and wired into the top-level `host-test`).
+Flashing, wiring and the SWD/DFU gotchas are in `docs/flashing.md`. A fresh clone
+needs `firmware/ant_network_key.h` and `firmware/ant_license.mk` copied from
+their `.example` files or the build fails — see `CLAUDE.md`.
 
-**The open item this was built to investigate, not yet fixed:** the first
-real-watch run against the mock (2026-07-30) showed the data field sending
-workout frames **inconsistently**. Pausing/starting the activity only
-*sometimes* produced a frame, and moving to another interval with a
-**different target pace** frequently produced no frame at all. The frames that
-did arrive decoded correctly — this is watch-side (`watch/garmin_data_field/`)
-send behaviour, not a bridge or wire-format bug. Leading suspects, in order:
-`DataFieldView._maybeSend` dropping a frame while `mWritePending` is still true
-(should self-heal on the next differing `compute()`, but verify it actually
-does); `_packFrame`'s fallback to `info.currentWorkoutStep` collapsing to the
-free-run base frame mid-transition and comparing equal to `mLastFrame`,
-suppressing the send; and `compute()`'s ~1 Hz cadence possibly depending on the
-field's screen being active on some devices. Reproduce against `make
-mock-bridge` and read the frame log — every write is timestamped, so "no frame
-was sent" and "a frame was sent but ignored" are now distinguishable, which was
-not previously possible. This is the next piece of work.
+## Current state — one line
+
+**The watch connects to the bridge and sends frames; the frames do not contain
+the speed target.** Transport is proven end to end. The Connect IQ data field is
+the broken link.
+
+## Test status
+
+`make host-test` — **all green** as of `db19621`:
+
+| Gate | Count | What |
+|---|---|---|
+| `make check-uuid` | 4 consumers | firmware / mock / both CIQ projects agree on the A6ED base |
+| `test/host` | 9 suites | `ftms_parse` `ftms_devlist` `ifit_parse` `ctrl_dispatch` `ant_sdm_encode` `ifit_fsm` `connect_policy` `ctrl_frames` `workout_ctrl` |
+| `test/mock` | 4 suites | `test_workout_probe` `test_wkt_decode` `test_link_state` `test_script_header` |
+
+`make firmware` links clean (101528 text / 844 data / 15936 bss). Branch
+`feat/mock-bridge` was merged to `main` and deleted; `main` is 74 commits ahead
+of `origin/main` — **nothing has been pushed**.
+
+## Architecture
+
+| Path | Responsibility |
+|---|---|
+| `core/` | Platform-agnostic protocol logic. Compiles for the host with **no** nRF/SoftDevice/BLE includes — invariant, see `CLAUDE.md`. Parsers, FSMs, belt policy, ANT SDM encoding. |
+| `core/workout_ctrl.c` | The belt-control decision: 15-byte frame in, `ACT_NONE`/`ACT_SPEED`/`ACT_STOP` out, plus dedup and a ~30 s keepalive re-assert. |
+| `core/machine.h` | Facade that auto-detects FTMS (`0x1826`) and iFit (`0x1533`) into one device list and routes connect/speed/stop. |
+| `firmware/` | nRF5 SDK + S340 glue: BLE peripheral (watch-facing), BLE central (treadmill-facing), ANT master, USB-CDC console. `app_state.h` is the shared struct all three radios render from. |
+| `watch/garmin_data_field/` | **The main product path.** Packs the workout step into 15 bytes and writes it to `A6ED0004`. This is where the current bug is. |
+| `watch/garmin_ctrl_app/` | The SCAN/CONNECT device picker over `A6ED0002`/`0003`. |
+| `test/mock/mock_bridge.py` | macOS BLE peripheral impersonating the bridge, for watch work without hardware. |
+| `test/mock/workout_probe.c` | ctypes shim that compiles **the real `core/workout_ctrl.c`** into `libworkout_probe.so`, so the mock's predicted belt action is the firmware's own, never a Python reimplementation. |
+
+## What works
+
+- **Three-radio concurrency** — the core architectural risk v2 existed to test.
+  BLE peripheral + BLE central + ANT master held ~366 s with zero faults, belt
+  tracking target, on a **real iFit treadmill**. See
+  `docs/superpowers/test-logs/2026-07-21-concurrency-gate.md`.
+- **Belt speed control** — 8.00 km/h commanded → 7.99 km/h measured.
+- **Watch ⇄ bridge BLE transport** — the watch finds the service, connects, and
+  writes 15-byte frames that decode correctly on the wire. Verified 2026-07-31
+  against the mock.
+- **The mock rig itself** — decode, link inference, and firmware-sourced belt
+  prediction all behaved through a full workout.
+
+## What is broken — the current blocker
+
+**The data field never emits a speed target.** Across a full structured workout
+(warmup → 5 × 5:55/mi + rest → cooldown), all 13 frames arrived with
+`flags=0x00` and **not one** carried `tgt=0(SPEED)`. Full evidence:
+`docs/superpowers/test-logs/2026-07-31-mock-bridge-bringup.md`.
+
+| Frame shape | Count | Maps to |
+|---|---|---|
+| `intensity=2` | 2 | warmup |
+| `intensity=1(rest) tgt=2(OPEN)` | 4 | the rests |
+| `intensity=255 tgt=255` (all sentinel) | **5** | **the 5 work sets** |
+| `intensity=3` | 1 | cooldown |
+
+The field resolves warmup, rest and cooldown steps and reports their intensity
+and target type correctly, then goes completely blind on exactly the steps
+carrying the speed target. Five all-sentinel frames for five work sets.
+
+Since **both** `f[3]` (intensity) and `f[4]` (targetType) stay at `0xFF`, three
+paths in `DataFieldView._packFrame` can produce that frame:
+
+1. `if (wStep == null) return f;` (`DataFieldView.mc:108`) — `Activity.getCurrentWorkoutStep()`
+   *and* the `info.currentWorkoutStep` fallback both returned null.
+2. The `catch` block (`DataFieldView.mc:152`), which discards everything and
+   returns a fresh `_newBaseFrame()`.
+3. A non-null step whose `intensity` is absent/null **and** which has no
+   `targetType` attribute (`DataFieldView.mc:117`). Less likely — the rest steps
+   read `intensity` fine — but it is not excluded by the frame.
+
+They are indistinguishable on the wire, and that ambiguity is the blocker.
+
+This supersedes the 2026-07-30 note that framed the problem as inconsistent
+*timing*. It is not a timing bug and `mWritePending` is not the suspect: the
+belt was never commanded because a speed target was never transmitted. The
+earlier "moving to another interval with a different target pace didn't always
+work" report is fully explained — it never worked.
+
+## Next steps, in priority order
+
+1. **Disambiguate the three paths.** `flags` has seven spare bits and
+   `workout_ctrl.c` ignores unknown ones, so this is cheap and
+   backward-compatible: set bit1 in the `catch`, bit2 on the null-step return,
+   bit3 on the missing-`targetType` return. One more run against `make
+   mock-bridge` then says which it is. The `catch` path's `System.println` goes
+   nowhere reachable on real hardware — do not rely on it.
+2. **If it throws:** find the property access that raises on a pace-target step.
+   `targetValueLow`/`targetValueHigh` are the first suspects — a pace target may
+   hand back a type `_targetToWire`'s `.toFloat()` does not accept.
+3. **If it is null:** both step accessors returning null *only* for
+   speed-target steps needs a minimal reproduction. Likely a CIQ system-version
+   behaviour worth pinning down before working around it.
+4. **Re-run the acceptance table** in the bring-up log once a speed target
+   reaches the wire. Rows 3–7 (speed target → `ACT_SPEED`, the 30 s keepalive
+   re-assert, resume, stale reset) are **all still unproven** — nothing was ever
+   latched, so nothing downstream of the latch has been exercised.
+5. **Retest pause vs. end-of-activity.** The run reported a pause but the frame
+   said `timer=1(STOPPED)`, not `2(PAUSED)`. Both map to the same belt action so
+   it is cosmetic today, but the two are not distinguishable in that log.
+6. Then the M4.2 Part B hardware rows (B1/B4/B5) — watch pace tracking belt
+   speed with the treadmill link up. See `docs/finishing-plan.md`.
+
+## Known gaps and non-goals
+
+- ⚠ **A free run does not move the belt, by design.** `decode_action()` returns
+  `ACT_NONE` with no structured speed step, meaning "don't touch the belt". This
+  has looked like a bug twice. It isn't. Driving the belt *requires* a structured
+  workout with a speed target.
+- **Nothing is pushed to `origin`.** `main` is 74 commits ahead.
+- **One treadmill connection at a time** is an invariant, not a limitation —
+  never reintroduce simultaneous FTMS + iFit.
+- The mock does **not** emulate the ctrl grammar (`A6ED0002`/`0003`, `SCAN`/
+  `CONNECT`/`LIST`, `D`/`E`/`S` frames). `garmin_ctrl_app` is not exercised by it.
+- The mock's `LINK` lines are **inferred from write traffic**, not reported by
+  the BLE stack: bless's `is_connected()` tracks *subscribed* centrals and the
+  data field never subscribes, so it reads False forever. A legitimate 35 s
+  inter-frame gap was observed — do not tighten the 120 s stale window.
+- `intensity` 1/2/3 → rest/warmup/cooldown is read from alignment with the
+  workout that was run, **not** from a firmware-pinned constant table. Only
+  `SPEED=0` for targetType is grounded in this repo's source.
+- Open GATT server (no pairing) is an accepted, recorded risk.
+- `make flash-app` is broken (parks in the bootloader); use `make flash-full`.
+  `make flash-sd` chip-erases and destroys USB-updatability.
+
+## Dependencies and tooling
+
+- **Host tests:** system `cc` and `python3`. No third-party packages.
+- **Mock bridge:** `uv` (the script is a PEP-723 `uv run --script`), which pulls
+  `bless==0.3.0`. The pin is load-bearing — the advertising behaviour the design
+  rests on (`prioritize_local_name`, and the `len(name) > 10` rule that drops
+  service UUIDs from the advert) is a bless implementation detail, not a
+  contract. `test_script_header.py` enforces that the pin stays exact.
+  ⚠ **Power the real bridge off** before running the mock, or the field will
+  pair with whichever it finds first and you will debug the wrong peer.
+- **Firmware:** PlatformIO's GCC **7.2.1** (not Homebrew's), nRF5 SDK 17.1.0,
+  S340 v7.0.1 API headers. Concrete paths in `CLAUDE.md`.
+- **Flashing:** no onboard debugger — SWD via a Pico/CMSIS-DAP + `pyocd` (not
+  `nrfjprog`), USB via `nrfutil`.
+- **Watch:** Connect IQ SDK for rebuilding `watch/`; sideload the `.prg` over USB
+  mass storage.
+
+---
+
+# Historical — session log from 2026-07-29
+
+Kept for the debugging techniques and the retracted-hypotheses record, both of
+which are still valuable. **Its "State", test counts, and "Next steps" sections
+are superseded by everything above** — in particular, the claim that there is no
+watch-side code in this repo is no longer true: both CIQ projects were vendored
+into `watch/` on 2026-07-29.
 
 ---
 
