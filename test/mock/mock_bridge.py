@@ -16,6 +16,9 @@ finds advertising the service UUID; with both on air you will debug the wrong pe
 """
 
 import asyncio
+import ctypes
+import pathlib
+import threading
 import time
 from datetime import datetime
 
@@ -24,6 +27,8 @@ from bless import (
     GATTCharacteristicProperties as Props,
     GATTAttributePermissions as Perm,
 )
+
+import wkt_decode as wkt
 
 # Must match firmware/ble_ctrl_svc.c. test/check_uuid_contract.py enforces this.
 CTRL_SVC = "A6ED0001-D344-460A-8075-B9E8EC90D71B"
@@ -37,11 +42,48 @@ CTRL_WKT = "A6ED0004-D344-460A-8075-B9E8EC90D71B"  # write (workout telemetry)
 # bridge in a phone scanner.
 ADV_NAME = "TMILL-MOCK"
 
-IDLE_LOG_S = 10.0
+LIB = pathlib.Path(__file__).with_name("libworkout_probe.so")
+ACT = {0: "no change", 1: "ACT_SPEED", 2: "ACT_STOP"}
+
+# workout_ctrl.c holds static state, and it is reached from two threads: the
+# CoreBluetooth callback thread (writes) and the asyncio loop (1 Hz tick).
+_probe_lock = threading.Lock()
+
+
+def load_probe():
+    if not LIB.exists():
+        raise SystemExit(
+            f"{LIB.name} is missing. Build it first:\n"
+            f"    make -C {LIB.parent}\n"
+            f"or just run `make mock-bridge` from the repo root."
+        )
+    lib = ctypes.CDLL(str(LIB))
+    lib.probe_reset.argtypes = []
+    lib.probe_reset.restype = None
+    lib.probe_feed.argtypes = [ctypes.c_char_p, ctypes.c_uint16]
+    lib.probe_feed.restype = ctypes.c_int
+    lib.probe_tick.argtypes = []
+    lib.probe_tick.restype = ctypes.c_int
+    lib.probe_last_speed.argtypes = []
+    lib.probe_last_speed.restype = ctypes.c_float
+    return lib
+
+
+probe = None      # set in main()
+frame_no = 0      # written only from the CoreBluetooth callback thread
 
 # Written from the CoreBluetooth callback thread, read from the asyncio loop.
-# A bare float assignment is atomic under the GIL, so no lock is needed.
-_last_event = time.monotonic()
+# Bare assignments to a float/None are atomic under the GIL, so no lock is needed.
+_last_write = None      # monotonic time of the last characteristic write, ever
+_last_log = time.monotonic()   # monotonic time of the last line the loop printed
+
+IDLE_LOG_S = 10.0       # heartbeat cadence while frames are flowing
+WAIT_LOG_S = 30.0       # quieter heartbeat before the watch ever appears
+# A steady free run legitimately goes minutes without a write (the field sends on
+# change), and the gate run showed a 35 s gap while plainly connected. This window
+# is deliberately far larger than that — it exists to clear the latched command
+# between sessions, not to track the link precisely.
+STALE_S = 120.0
 
 
 def log(tag: str, msg: str) -> None:
@@ -49,19 +91,49 @@ def log(tag: str, msg: str) -> None:
     print(f"{ts}  {tag:<5} {msg}", flush=True)
 
 
+def _action_str(act: int) -> str:
+    if act == 1:
+        return f"-> ACT_SPEED {probe.probe_last_speed():.1f} km/h"
+    if act == 2:
+        return "-> ACT_STOP"
+    return "-> no change (deduplicated, or belt held)"
+
+
 def on_write(characteristic, value: bytearray) -> None:
     """bless dispatches every characteristic write here."""
-    global _last_event
-    _last_event = time.monotonic()
+    global _last_write, _last_log, frame_no
+    _last_write = _last_log = time.monotonic()
+
     uuid = str(characteristic.uuid).upper()
-    if uuid.startswith("A6ED0004"):
-        log("WKT", f"len={len(value)} raw={bytes(value).hex()}")
-    else:
-        log("CTRL", f"{uuid[:8]} {bytes(value).hex()}")
+    if not uuid.startswith("A6ED0004"):
+        # 0002 exists so service discovery matches the firmware's table; the
+        # ctrl grammar is deliberately not emulated. Log and move on.
+        log("CTRL", f"{uuid[:8]} {bytes(value).hex()}  (ignored)")
+        return
+
+    frame_no += 1
+    raw = bytes(value)
+    try:
+        d = wkt.decode(raw)
+    except wkt.Malformed as e:
+        # workout_ctrl_on_frame() drops these silently; the mock must not.
+        log("WKT", f"#{frame_no}  {e}  MALFORMED - dropped  raw={raw.hex()}")
+        return
+
+    with _probe_lock:
+        act = probe.probe_feed(raw, len(raw))
+        detail = _action_str(act)
+
+    # One log() call, so every continuation line keeps the same indent.
+    log("WKT", f"#{frame_no}  len={len(raw)} {wkt.format_frame(d)}\n"
+               f"{wkt.INDENT}{detail}   [{wkt.annotate(d)}]")
 
 
 async def main() -> None:
-    global _last_event
+    global probe, _last_log
+
+    probe = load_probe()
+    probe.probe_reset()
 
     server = BlessServer(name=ADV_NAME)
     server.read_request_func = None
@@ -97,19 +169,50 @@ async def main() -> None:
     log("ADV", f"{ADV_NAME}  {CTRL_SVC}")
     log("ADV", "power the real bridge OFF — the field pairs with whatever it finds first")
 
-    connected = False
+    linked = False
     try:
         while True:
             await asyncio.sleep(1.0)
-            now = await server.is_connected()
-            if now != connected:
-                connected = now
-                _last_event = time.monotonic()
-                log("LINK", "central connected" if now else "central disconnected")
+            now = time.monotonic()
+
+            # The firmware calls workout_ctrl_tick() at ~1 Hz; matching that here
+            # makes the ~30 s keepalive re-assert show up exactly as it would on
+            # hardware. It runs whether or not a watch is attached, because the
+            # latched command is what the keepalive re-asserts.
+            with _probe_lock:
+                act = probe.probe_tick()
+                speed = probe.probe_last_speed()
+            if act == 1:
+                _last_log = now
+                log("KEEP", f"-> re-assert {speed:.1f} km/h")
                 continue
-            if connected and time.monotonic() - _last_event >= IDLE_LOG_S:
-                _last_event = time.monotonic()
-                log("idle", "(no write — field sends on change only)")
+
+            if _last_write is not None and not linked:
+                linked = True
+                _last_log = now
+                log("LINK", "frames arriving - watch attached (inferred from "
+                            "traffic; bless is_connected() is subscription-based "
+                            "and the data field never subscribes)")
+                continue
+
+            if linked and now - _last_write >= STALE_S:
+                linked = False
+                # Drop the latched command so a stale keepalive does not survive
+                # into the next session.
+                with _probe_lock:
+                    probe.probe_reset()
+                _last_log = now
+                log("LINK", f"no frames for {STALE_S:.0f}s - assuming the watch "
+                            f"is gone; probe reset")
+                continue
+
+            if now - _last_log >= (IDLE_LOG_S if linked else WAIT_LOG_S):
+                _last_log = now
+                if linked:
+                    log("idle", "(no write - field sends on change only)")
+                else:
+                    log("wait", "no frames yet - start a run activity with the "
+                                "data field on a screen")
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
