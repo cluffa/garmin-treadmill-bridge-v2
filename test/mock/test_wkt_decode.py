@@ -73,7 +73,17 @@ def main():
     assert "oversized" in w.annotate(d)
 
     # Content annotations describe the frame, not the belt policy.
-    assert "FREE RUN" in w.annotate(w.decode(frame(3, 0x00, 0xFF, 0, 0)))
+    # All-sentinel step fields with the flag clear: a genuine free run (or a
+    # step the field could not resolve at all — the frame cannot tell them apart).
+    assert "free run" in w.annotate(w.decode(frame(3, 0x00, 0xFF, 0, 0)))
+
+    # Flag clear but the step fields carry real values: NOT a free run. This is
+    # the shape a workout's rest step actually arrives in — observed on hardware
+    # 2026-07-31 as intensity=1(rest) tgt=2(OPEN) flags=0x00. Labelling it
+    # "free run" would point the reader at the wrong bug.
+    rest_step = w.annotate(w.decode(frame(3, 0x00, 2, 0, 0, intensity=1)))
+    assert "free run" not in rest_step, rest_step
+    assert "structured step present" in rest_step, rest_step
     assert w.annotate(w.decode(frame(2, 0x00, 0xFF, 0, 0))) == "timer not running"
     assert w.annotate(w.decode(frame(3, 0x01, 2, 0, 0))) == "non-speed target"
     assert w.annotate(w.decode(frame(3, 0x01, 0, 2222, 2500))) == "speed step"

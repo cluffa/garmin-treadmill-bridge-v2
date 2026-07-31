@@ -93,8 +93,12 @@ def format_frame(d: dict) -> str:
 def annotate(d: dict) -> str:
     """Describe the frame's *content*. Not a policy decision — see module docstring.
 
-    'FREE RUN' is called out because a free run legitimately produces no belt
-    movement, which has been mistaken for a fault twice (watch/README.md).
+    The no-step case is called out because it legitimately produces no belt
+    movement, which has been mistaken for a fault twice (watch/README.md). It is
+    split in two: all-sentinel step fields really are "no step" (a free run, or a
+    step the field could not resolve — the frame cannot distinguish those), while
+    populated intensity/target fields mean a structured step WAS visible and the
+    field simply did not flag it as a speed target.
 
     An oversized frame (extra_bytes > 0) gets a trailing note — worth knowing
     about, but not a rejection; the firmware acts on its first FRAME_LEN bytes
@@ -117,7 +121,18 @@ def annotate(d: dict) -> str:
     if d["timer"] != 3:
         return "timer not running" + note
     if not (d["flags"] & 0x01):
-        return "FREE RUN - no structured step" + note
+        # flags bit0 clear only means "the field did not report a speed step".
+        # That is a free run ONLY when the step fields are all sentinels too.
+        # If intensity or targetType carry real values, a structured step was
+        # plainly visible to the watch and DataFieldView._packFrame returned
+        # before setting the flag — a different situation with a different fix,
+        # and labelling it "FREE RUN" sends the reader down the wrong path.
+        # Observed on hardware 2026-07-31: a workout's rest steps arrive as
+        # intensity=1(rest) tgt=2(OPEN) flags=0x00. See
+        # docs/superpowers/test-logs/2026-07-31-mock-bridge-bringup.md.
+        if d["intensity"] == 0xFF and d["target"] == 0xFF:
+            return "no step reported - free run, or the field could not resolve the step" + note
+        return "structured step present but not flagged as a speed target" + note
     if d["target"] != 0:
         return "non-speed target" + note
     if d["lo_mmps"] == 0 and d["hi_mmps"] == 0:
