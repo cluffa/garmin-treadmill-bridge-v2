@@ -127,17 +127,24 @@ One line per event, `HH:MM:SS.mmm` prefix:
 
 ```
 21:04:12.310  ADV   TMILL-MOCK  A6ED0001-D344-460A-8075-B9E8EC90D71B
-21:04:33.104  WKT   #1  len=15 ver=1  timer=3(ON) flags=0x01 intensity=0(active)
-                        tgt=0(SPEED) lo=2222 hi=2500 mm/s (8.0–9.0 km/h) dur=5(TIME) 300 rep=0
-                        -> ACT_SPEED 8.5 km/h
-21:04:33.912  LINK  frames arriving — watch attached (inferred from traffic;
-                     bless is_connected() is subscription-based and the data
-                     field never subscribes)
-21:04:43.918  idle  (no write — field sends on change only)
+21:04:33.104  WKT   #1  len=15 ver=1 timer=3(ON) flags=0x01 intensity=0(active)
+                    tgt=0(SPEED) lo=2222 hi=2500 mm/s (8.0-9.0 km/h) dur=5 300 rep=0
+                    -> ACT_SPEED 8.5 km/h   [speed step]
+21:04:33.912  LINK  frames arriving - watch attached (inferred from traffic;
+                    bless is_connected() is subscription-based and the data
+                    field never subscribes)
+21:04:43.918  idle  (no write - field sends on change only)
 21:05:03.926  KEEP  -> re-assert 8.5 km/h
-21:05:41.220  WKT   #2  timer=2(PAUSED) flags=0x00 -> ACT_STOP
-21:06:02.115  WKT   #3  len=12  MALFORMED (expected 15) — dropped
+21:05:41.220  WKT   #2  len=15 ver=1 timer=2(PAUSED) flags=0x00 intensity=255(unset)
+                    tgt=255(unset) lo=0 hi=0 mm/s (0.0-0.0 km/h) dur=255(unset) 0 rep=0
+                    -> ACT_STOP   [timer not running]
+21:06:02.115  WKT   #3  len=12 (expected >= 15)  MALFORMED - dropped  raw=0103...
 ```
+
+Continuation lines are indented to the message column (20 chars), so a frame's
+three lines read as one record. The bracketed text at the end of the action line
+is `wkt_decode.annotate()` describing the frame's *content*; the `->` action
+immediately before it comes from `core/workout_ctrl.c` itself.
 
 (See the amendment at the top of this document: the `LINK` line above is
 *inferred from write traffic*, not from a connection callback — there is no
@@ -150,13 +157,25 @@ That ambiguity has already cost this project debugging time twice
 (`watch/README.md`, "a free run will not move the belt").
 
 Sentinel values are rendered by name: `0xFF` for intensity / targetType /
-durationType prints as `255(unset)`, and the free-run signature
-(`timer=3 flags=0x00 tgt=255`) is annotated inline as `FREE RUN — belt held` so
-it is not mistaken for a fault.
+durationType prints as `255(unset)`, and the no-step signature is annotated
+inline so it is not mistaken for a fault.
+
+⚠ Amended 2026-07-31, after the hardware bring-up
+(`docs/superpowers/test-logs/2026-07-31-mock-bridge-bringup.md`): this spec
+originally called every `flags=0x00` frame `FREE RUN — belt held`. That is wrong
+for the frames a real workout actually produces. `flags` bit 0 clear only means
+"the field did not report a speed target"; a workout's rest steps arrive as
+`intensity=1(rest) tgt=2(OPEN) flags=0x00`, which is a structured step the field
+resolved and simply did not flag. Only an all-sentinel step
+(`intensity=255 tgt=255`) may be a genuine free run — and even then the frame
+cannot distinguish a free run from a step the field failed to resolve, which is
+exactly the watch bug the bring-up found. `annotate()` now splits those cases.
 
 Malformed frames are detected and logged by the mock itself.
 `workout_ctrl_on_frame()` drops bad length/version silently, so the mock checks
-length and version before feeding the probe.
+length and version before feeding the probe. The length check matches the
+firmware's `len < WORKOUT_FRAME_LEN`: an *over*-long frame is decoded from its
+first 15 bytes and noted, not rejected, because the firmware would act on it.
 
 ## Error handling
 

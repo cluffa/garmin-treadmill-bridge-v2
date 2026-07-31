@@ -95,9 +95,9 @@ _last_log = time.monotonic()   # monotonic time of the last line the loop printe
 
 # Cadence/timeout constants and the actual link-state decision live in
 # link_state.py — a pure module (no bless/ctypes/I-O) so it is unit-testable
-# without bless installed. See test/mock/test_link_state.py.
-IDLE_LOG_S = link_state.IDLE_LOG_S
-WAIT_LOG_S = link_state.WAIT_LOG_S
+# without bless installed. See test/mock/test_link_state.py. Only STALE_S is
+# re-exported here, because it is the only one this file names (in the stale
+# log line); the cadence constants are used solely inside link_state.decide().
 STALE_S = link_state.STALE_S
 
 

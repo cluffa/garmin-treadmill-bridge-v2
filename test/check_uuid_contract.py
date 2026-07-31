@@ -19,7 +19,8 @@ firmware doesn't have is just as silently broken as one on the wrong base. And a
 consumer that matches zero A6ED UUIDs at all is treated as a failure, not a
 warning: a file in this list that references none of them has either been
 renamed/rewritten wholesale or never had the contract in it to begin with, and
-either way the guard has stopped watching it.
+either way the guard has stopped watching it. A listed consumer that does not
+exist at all fails for the same reason.
 
 Run: python3 test/check_uuid_contract.py   (exit 0 = agree, 1 = drift)
 """
@@ -87,7 +88,15 @@ def main() -> int:
     bad = 0
     for path in CONSUMERS:
         if not path.exists():
-            print(f"  SKIP {path.relative_to(ROOT)} (absent)")
+            # Not a skip. CONSUMERS is a hand-curated list of the files that
+            # carry the contract; a missing one means it was deleted or moved
+            # without updating this list, and the guard silently stopped
+            # watching it. That is the same failure mode as a file with no
+            # A6ED UUIDs in it — announce it, don't shrug at exit 0. If a
+            # consumer is genuinely gone for good, delete it from CONSUMERS.
+            bad += 1
+            print(f"  FAIL {path.relative_to(ROOT)}: absent — deleted or moved "
+                  "without updating CONSUMERS in this file")
             continue
         found = UUID_RE.findall(path.read_text())
         if not found:
