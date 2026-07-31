@@ -130,7 +130,7 @@ def on_write(characteristic, value: bytearray) -> None:
 
 
 async def main() -> None:
-    global probe, _last_log
+    global probe, _last_log, _last_write
 
     probe = load_probe()
     probe.probe_reset()
@@ -197,6 +197,16 @@ async def main() -> None:
 
             if linked and now - _last_write >= STALE_S:
                 linked = False
+                # Also clear _last_write, not just `linked`: the next branch up
+                # re-links as soon as `_last_write is not None`, so leaving the
+                # old timestamp in place makes it immediately true again on the
+                # very next tick, and then true forever (the timestamp only
+                # gets older) — an infinite 1 Hz oscillation between "frames
+                # arriving" and this branch, calling probe_reset() on every
+                # other tick instead of once. Clearing it returns to the exact
+                # pre-watch "no write ever seen" state, so a real new frame is
+                # required before the mock claims a link again.
+                _last_write = None
                 # Drop the latched command so a stale keepalive does not survive
                 # into the next session.
                 with _probe_lock:
