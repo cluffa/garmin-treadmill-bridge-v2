@@ -3,6 +3,23 @@
 **Date:** 2026-07-30
 **Status:** approved, ready for planning
 
+> **Amendment (2026-07-30, after the first real-watch hardware gate):** the
+> implementation diverges from this design in one material way. bless's
+> `is_connected()` on the CoreBluetooth backend reports *subscribed* centrals,
+> and `watch/garmin_data_field` deliberately never subscribes to `A6ED0003` —
+> it only writes. So `is_connected()` is structurally `False` for this peer,
+> there is no BLE central-disconnect callback the mock can use, and the
+> "Central disconnect" behaviour promised below does not exist. Link state is
+> instead **inferred from write traffic** on a 120 s silence window
+> (`mock_bridge.py` `_last_write` / `STALE_S`, decided by
+> `test/mock/link_state.py`), which is what actually shipped. See
+> `docs/HANDOFF.md` and `watch/README.md` for the current, load-bearing
+> behaviour; the "Log format" and "Error handling" sections below have been
+> corrected in place to match it, but treat this file as historical design
+> intent rather than a spec of current behaviour anywhere the two still
+> disagree. The rest of the original reasoning (approach, components, the
+> decode/probe pipeline) is unchanged and still accurate.
+
 ## Problem
 
 Iterating on `watch/garmin_data_field` currently requires the physical nRF52840
@@ -53,7 +70,7 @@ Rejected alternatives:
 | File | Responsibility |
 |---|---|
 | `test/mock/workout_probe.c` | `machine_*` stubs that record the last command, plus the exported probe API. Compiles against `core/workout_ctrl.c`. |
-| `test/mock/Makefile` | Builds `libworkout_probe.dylib` with the host `cc`. |
+| `test/mock/Makefile` | Builds `libworkout_probe.so` with the host `cc`. |
 | `test/mock/mock_bridge.py` | `bless` peripheral, ctypes binding, decoding, logging. |
 
 ### `workout_probe.c` interface
@@ -81,7 +98,7 @@ is untouched.
 
 ### `mock_bridge.py`
 
-Advertises local name `TMILL-CTRL` with service UUID
+Advertises local name `TMILL-MOCK` with service UUID
 `A6ED0001-D344-460A-8075-B9E8EC90D71B`. GATT table:
 
 | Char | Properties | Behaviour |
@@ -109,16 +126,22 @@ re-assert appears in the log exactly as it would on hardware.
 One line per event, `HH:MM:SS.mmm` prefix:
 
 ```
-21:04:12.310  ADV   TMILL-CTRL  A6ED0001-D344-460A-8075-B9E8EC90D71B
-21:04:31.882  LINK  central connected
+21:04:12.310  ADV   TMILL-MOCK  A6ED0001-D344-460A-8075-B9E8EC90D71B
 21:04:33.104  WKT   #1  len=15 ver=1  timer=3(ON) flags=0x01 intensity=0(active)
                         tgt=0(SPEED) lo=2222 hi=2500 mm/s (8.0–9.0 km/h) dur=5(TIME) 300 rep=0
                         -> ACT_SPEED 8.5 km/h
-21:04:34.101  idle  (no write — field sends on change only)
-21:05:03.900  KEEP  -> re-assert 8.5 km/h
+21:04:33.912  LINK  frames arriving — watch attached (inferred from traffic;
+                     bless is_connected() is subscription-based and the data
+                     field never subscribes)
+21:04:43.918  idle  (no write — field sends on change only)
+21:05:03.926  KEEP  -> re-assert 8.5 km/h
 21:05:41.220  WKT   #2  timer=2(PAUSED) flags=0x00 -> ACT_STOP
 21:06:02.115  WKT   #3  len=12  MALFORMED (expected 15) — dropped
 ```
+
+(See the amendment at the top of this document: the `LINK` line above is
+*inferred from write traffic*, not from a connection callback — there is no
+`central connected` / `central disconnect` event available for this peer.)
 
 The `idle` heartbeat, throttled to roughly every 10 s while connected, is
 deliberate. The field writes only on change, so a silent log is *correct*
@@ -138,12 +161,23 @@ length and version before feeding the probe.
 ## Error handling
 
 - **Wrong length or version** → logged `MALFORMED`, not fed to the probe.
-- **Dylib missing** → the script exits at startup with the `make` command to
-  build it, rather than falling back to a Python reimplementation.
-- **Advertising failure** → surfaced immediately with the CoreBluetooth error;
-  no silent retry loop.
-- **Central disconnect** → logged, `probe_reset()` called so a stale keepalive
-  does not survive into the next session, and advertising resumes.
+- **`libworkout_probe.so` missing** → the script exits at startup with the
+  `make` command to build it, rather than falling back to a Python
+  reimplementation.
+- **Advertising failure** → the design's intent was to surface it immediately
+  with no silent retry. That is not what bless 0.3.0 actually does:
+  `corebluetooth/server.py`'s `start()` catches `TimeoutError` and calls
+  `await self.start()` again, recursively, with no bound. This is a `bless`
+  implementation detail the mock does not override — accepted as a known risk
+  rather than worked around, since a genuinely stuck Bluetooth stack is a rare
+  failure mode for a debug tool that a human is watching run.
+- **No central-disconnect event** → see the amendment at the top of this
+  document. There is no disconnect callback for this peer, so there is
+  nothing to log on disconnect. Instead, silence on `A6ED0004` for
+  `STALE_S` (120 s) is treated as "the watch is gone": the mock logs it and
+  calls `probe_reset()` so a stale keepalive does not survive into the next
+  session. Advertising itself is never stopped or restarted by link state —
+  the mock advertises continuously from `server.start()` to shutdown.
 
 ## Testing
 
@@ -153,11 +187,13 @@ is hardware bring-up. Two things wire into the existing gate:
 
 - `test/mock/mock_bridge.py` is added to `CONSUMERS` in
   `test/check_uuid_contract.py`, so it cannot drift from the firmware's UUID base.
-- A `make mock-bridge` target builds the dylib and runs the script.
+- A `make mock-bridge` target builds `libworkout_probe.so` and runs the script.
 
 Bring-up acceptance, on a real watch:
 
-1. Watch finds and connects to `TMILL-CTRL` (link line appears).
+1. Watch finds and connects to `TMILL-MOCK`; the mock's `LINK` line appears
+   once frames start arriving (see the amendment above — this is inferred
+   from write traffic, not a connect event).
 2. A free run logs `timer=3 flags=0x00` and `ACT_NONE` — the belt-held case.
 3. A structured workout with a speed target logs `ACT_SPEED` at the midpoint of
    `lo`/`hi`.
@@ -170,7 +206,7 @@ Ordered by likelihood of biting.
 
 1. **macOS advertising a 128-bit service UUID.** The CIQ delegate filters on the
    *advertisement*, not the GATT table. A 16-byte UUID plus header plus the name
-   `TMILL-CTRL` is 30 of the 31 available bytes — it fits, but barely, and
+   `TMILL-MOCK` is 30 of the 31 available bytes — it fits, but barely, and
    CoreBluetooth may relocate or drop the name. This is the load-bearing
    assumption of the whole design. **The first task in the implementation plan is
    a minimal spike that advertises and does nothing else, verified with an
@@ -188,4 +224,7 @@ Ordered by likelihood of biting.
 ## Dependencies
 
 `bless` (already used by `test/mock/mock_treadmill.py`, declared inline via the
-`uv run --script` header). Host `cc` for the dylib. No SDK, no ARM toolchain.
+`uv run --script` header — pinned to `bless==0.3.0` in `mock_bridge.py`, since
+the advertising behaviour this design relies on is a 0.3.0 implementation
+detail, not a documented contract). Host `cc` for `libworkout_probe.so`. No
+SDK, no ARM toolchain.

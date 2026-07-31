@@ -128,17 +128,37 @@ through ctypes, so it cannot drift from the bridge.
                         tgt=0(SPEED) lo=2222 hi=2500 mm/s (8.0-9.0 km/h) dur=5 300 rep=0
                         -> ACT_SPEED 8.5 km/h   [speed step]
 21:04:33.912  LINK  frames arriving - watch attached (inferred from traffic; bless is_connected() is subscription-based and the data field never subscribes)
-21:04:43.918  idle  (no write - field sends on change only)
-21:05:03.926  KEEP  -> re-assert 8.5 km/h
+21:04:43.912  idle  (no write - field sends on change only)
+21:04:53.912  idle  (no write - field sends on change only)
+21:05:02.912  KEEP  -> re-assert 8.5 km/h
 ```
+
+Arithmetic behind that block, for a 1 Hz loop, `IDLE_LOG_S=10`, `KEEPALIVE_TICKS=30`:
+the mock's tick loop runs `asyncio.sleep(1.0)` in a plain `while True`, so once it
+settles into a phase it prints on that phase every second — `:33.912`,
+`:34.912`, `:35.912`, … here. `LINK` fires on the first tick at/after the write
+(`:33.912`) and resets the "last logged" clock to that tick. `idle` then fires
+every tick where 10.0 s have elapsed since the last logged line:
+`33.912 + 10.0 = 43.912`, then `43.912 + 10.0 = 53.912` — **two** `idle` lines,
+not one, before the keepalive. The keepalive counter (`s_ka_ticks` in
+`core/workout_ctrl.c`) starts at 0 on the same write and increments by 1 on
+every subsequent tick regardless of link state; it reaches `KEEPALIVE_TICKS=30`
+on the 30th tick after the write, i.e. `33.912 + 29 * 1.0 = 62.912` (the first
+post-write tick is the 1st increment, so it's `+29`, not `+30`, more ticks
+later) — `21:05:02.912`, one tick earlier than `21:05:03.926` in the version
+this replaces. That KEEP tick also preempts what would otherwise have been a
+third `idle` line at `63.912`: the loop checks the keepalive before the idle
+heartbeat on every tick, so only one of the two ever prints.
 
 Note that `LINK` is **inferred from write traffic**, not read from a BLE
 connection callback: bless's `is_connected()` reports subscribed centrals, and
 the data field never subscribes to anything (it only writes), so that API is
-always `False` here. The mock instead watches for writes to `A6ED0004` and
-declares the link stale after 120 s of silence — deliberately generous, since a
-steady free run can legitimately go tens of seconds between writes (the field
-sends on change, not on a timer).
+always `False` here. The mock instead watches for a write to **any** of its
+characteristics — `on_write()` records the write timestamp before it looks at
+which characteristic was written, so a write to `A6ED0002` counts too, not
+just `A6ED0004` — and declares the link stale after 120 s of silence on all of
+them — deliberately generous, since a steady free run can legitimately go tens
+of seconds between writes (the field sends on change, not on a timer).
 
 ⚠ **Power the real bridge off first.** The data field pairs with the first
 device it finds advertising the service UUID; with both on air you will be

@@ -41,7 +41,7 @@ BLE central, ANT master).
 | `core/`        | Proven, host-tested protocol code (belt control policy, frame parsing, FSM). No nRF/SDK/BLE dependencies -- compiles for the host. |
 | `firmware/`    | nRF52840 / S340 radio glue: BLE GATT server (peripheral), BLE central (FTMS/iFit), ANT master (SDM footpod), USB-CDC console. |
 | `test/host/`   | 9 C unit-test suites for `core/` (the green gate -- must pass before every commit). |
-| `test/mock/`   | Python BLE mocks that let you test the device against a fake watch (`mock_watch.py`) and a fake treadmill (`mock_treadmill.py`) without hardware. |
+| `test/mock/`   | Python BLE mocks that let you test the device against a fake watch (`mock_watch.py`) and a fake treadmill (`mock_treadmill.py`) without hardware -- plus `mock_bridge.py`, which runs the *other* direction: a macOS peripheral that impersonates the bridge itself, so `watch/garmin_data_field` can be debugged with no nRF52840 in the loop at all (`make mock-bridge`; see `watch/README.md`). |
 | `test/renode/` | Bounded Renode non-radio smoke test (ELF loads, CPU starts). The S340 radio cannot run under Renode -- this is a smoke test, not a gate. |
 | `dfu/`         | DFU key management and documentation (see `dfu/README.md`). |
 | `docs/`        | Superpowers plans, specs, and test-log templates. |
@@ -56,7 +56,8 @@ See `CLAUDE.md` for the canonical environment variables and toolchain setup.
 make host-test
 ```
 
-Expect 9 suites, all OK.
+Expect 9 `core/` suites plus 3 mock suites (`test_workout_probe`,
+`test_wkt_decode`, `test_link_state`), all OK.
 
 ### First build on a new machine
 
@@ -140,11 +141,14 @@ Build first, then flash.
 
 ## Testing layers
 
-1. **Host unit tests** (green gate). `make host-test` -- 9 suites, must pass
-   before every commit.
+1. **Host unit tests** (green gate). `make host-test` -- 9 `core/` suites plus
+   3 mock suites (12 total), must pass before every commit.
 2. **Host BLE mocks** (functional integration). Run `mock_treadmill.py` (fake
    treadmill, FTMS peripheral) and `mock_watch.py` (fake Garmin watch/central)
    via `uv run`, then exercise the bridge against them. No hardware needed.
+   `mock_bridge.py` runs the other direction -- a fake *bridge* -- so
+   `watch/garmin_data_field` can be exercised against a Mac instead
+   (`make mock-bridge`; see `watch/README.md`).
 3. **Renode non-radio smoke** (bounded). Proves the ELF loads and the CPU
    starts. The S340 SoftDevice radio is NOT emulable in Renode, so this is a
    smoke test, not a gate.

@@ -1,5 +1,51 @@
 # Handoff — 2026-07-29
 
+## Update — 2026-07-30: mock bridge, and the next thing to fix
+
+Since the state below was written, branch `feat/mock-bridge` added a macOS-hosted
+mock of the bridge's BLE peripheral role (`test/mock/mock_bridge.py` +
+`test/mock/link_state.py` + `test/mock/wkt_decode.py`), so
+`watch/garmin_data_field` can be iterated on without the nRF52840 in the loop.
+It advertises the same `A6ED0001` control service the firmware does, decodes
+every 15-byte workout frame written to `A6ED0004`, and reports the belt action
+the real firmware would take — that prediction comes from `core/workout_ctrl.c`
+itself, compiled to `libworkout_probe.so` and loaded through ctypes, so it
+cannot drift into a second implementation of the belt-control decision. See
+`watch/README.md` ("Debugging the data field without the hardware bridge") and
+`docs/superpowers/specs/2026-07-30-mock-bridge-design.md` (with its amendment)
+for the full design and how it diverged from the original plan.
+
+Run it with:
+
+```sh
+make mock-bridge
+```
+
+Test status: `make host-test` now runs **9 host suites + 3 mock suites**, all
+green (the "9/9" further down this file is what it was *before* this branch;
+the mock suites — `test_workout_probe.py`, `test_wkt_decode.py`,
+`test_link_state.py` — are additional, gated by `test/mock/Makefile`'s `test`
+target and wired into the top-level `host-test`).
+
+**The open item this was built to investigate, not yet fixed:** the first
+real-watch run against the mock (2026-07-30) showed the data field sending
+workout frames **inconsistently**. Pausing/starting the activity only
+*sometimes* produced a frame, and moving to another interval with a
+**different target pace** frequently produced no frame at all. The frames that
+did arrive decoded correctly — this is watch-side (`watch/garmin_data_field/`)
+send behaviour, not a bridge or wire-format bug. Leading suspects, in order:
+`DataFieldView._maybeSend` dropping a frame while `mWritePending` is still true
+(should self-heal on the next differing `compute()`, but verify it actually
+does); `_packFrame`'s fallback to `info.currentWorkoutStep` collapsing to the
+free-run base frame mid-transition and comparing equal to `mLastFrame`,
+suppressing the send; and `compute()`'s ~1 Hz cadence possibly depending on the
+field's screen being active on some devices. Reproduce against `make
+mock-bridge` and read the frame log — every write is timestamped, so "no frame
+was sent" and "a frame was sent but ignored" are now distinguishable, which was
+not previously possible. This is the next piece of work.
+
+---
+
 ## State
 
 Branch `fix/code-review-2026-07-27`, working tree **clean**, 23 commits.
@@ -29,8 +75,9 @@ peripheral + BLE central + ANT master concurrently held for ~366 s with
 zero disconnects on either link. What remains is peer compatibility with the real
 watch, not concurrency.
 
-Gates: `make host-test` 9/9; firmware links clean with `-Werror` for both
-`TESTBOARD=0` and `TESTBOARD=1`.
+Gates (as of 2026-07-29, before the mock-bridge branch — see the 2026-07-30
+update above for the current count): `make host-test` 9/9; firmware links
+clean with `-Werror` for both `TESTBOARD=0` and `TESTBOARD=1`.
 
 Currently flashed: `775dde7`, `TESTBOARD=1`, via `make flash-full`. Boots clean.
 Note `flash-full` chip-erases, so **FDS is wiped and there is no saved
