@@ -81,8 +81,16 @@ label reads `SDM:TGT` / `SDM:ACT`.
 workout twice on the watch — once with the footpod in normal mode (the .fit
 speed trace is the *actual* belt response) and once in target mode (the trace
 is exactly what the bridge commanded) — and diff the two traces. The mode
-resets to actual at boot; toggling off re-seeds distance from the actual belt
-distance on the next broadcast.
+resets to actual at boot; toggling off re-seeds time and distance from the
+actual belt state on the next broadcast.
+
+**Works with no treadmill connected**, which is the other reason to use it —
+drive the bridge from the watch alone and watch what it *would* have commanded.
+Two things make that work: the target latches regardless of the belt link
+(`machine_set_speed()` sets `resolved_target_mps` before its connection check),
+and the broadcast time and distance are integrated from the app_timer RTC
+rather than from `treadmill.elapsed_s`, which only advances while a treadmill
+is actually sending FTMS data.
 
 ## Buzzer chirps (passive buzzer, PWM on expansion board A3/D3)
 

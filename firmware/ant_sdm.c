@@ -6,6 +6,7 @@
 #include "ant_interface.h"
 #include "ant_parameters.h"
 #include "app_error.h"
+#include "app_timer.h"
 #include "nrf.h"
 #include "nrf_log.h"
 #include "nrf_sdh_ant.h"
@@ -53,21 +54,21 @@ static uint8_t s_slot;    /* position in the CYCLE_LEN pattern */
  * bridge commanded: run the same workout in normal mode for the actual
  * belt trace and diff the two .fit files to score belt accuracy.
  *
- * Distance is integrated from elapsed_s deltas on page-1 slots (page 1 goes
- * out ~3.76 Hz, so the delta is 0 or 1 s per encode), which stalls the
- * trace whenever the belt state stops updating (e.g. link loss).
+ * Both the elapsed time and the distance this mode broadcasts are integrated
+ * from the app_timer RTC (32768 Hz), NOT from treadmill.elapsed_s — that field
+ * is filled in only by FTMS treadmill-data notifications (core/ftms_parse.c)
+ * and is zeroed on disconnect (ble_central.c), so keying off it pinned both
+ * the time and distance fields at 0 whenever no treadmill was connected, which
+ * is precisely the case this mode exists to serve. The target speed itself
+ * does latch with no treadmill: machine_set_speed() writes
+ * resolved_target_mps unconditionally, before its connection check.
  *
- * ⚠ That means this mode does NOT currently work with no treadmill connected,
- * which is one of the things it was wanted for. treadmill.elapsed_s is filled
- * in only by FTMS treadmill-data notifications (core/ftms_parse.c) and is
- * zeroed on disconnect (ble_central.c), so with no link the delta is always 0:
- * broadcast distance stays flat and the page-1 time field (elapsed_s % 256,
- * core/ant_sdm_encode.c) stays pinned at 0. Speed is still carried. To make
- * the standalone case work, integrate from a local monotonic tick (the
- * app_timer heartbeat) and synthesise the time field from it. */
-static float s_tgt_dist_m   = 0.0f;   /* target-integrated distance, m */
-static bool  s_tgt_seeded   = false;  /* seeded from actual distance on first page */
-static uint8_t s_prev_elapsed = 0;    /* last elapsed_s seen on a page-1 slot */
+ * Integrating on every TX event (~4 Hz) rather than per page-1 slot also keeps
+ * the trace smooth, and the RTC keeps running when the belt state goes quiet. */
+static float    s_tgt_dist_m    = 0.0f;   /* target-integrated distance, m */
+static float    s_tgt_elapsed_s = 0.0f;   /* target-integrated elapsed time, s */
+static bool     s_tgt_seeded    = false;  /* seeded from actual state on entry */
+static uint32_t s_tgt_prev_tick = 0;      /* app_timer ticks at the last encode */
 
 /* ---- ANT event observer callback ------------------------------------------- */
 static void ant_evt_handler(ant_evt_t *p_evt, void *p_context)
@@ -97,22 +98,38 @@ void ant_sdm_on_tx_event(void)
     if (st->sdm_broadcast_target) {
         ts_target = *ts;
         ts_target.speed_mps = st->resolved_target_mps;
+
+        uint32_t now_tick = app_timer_cnt_get();
         if (!s_tgt_seeded) {
-            s_tgt_dist_m = ts_target.distance_m;   /* start where actual is */
-            s_tgt_seeded = true;
+            /* Start where the actual belt is so toggling mid-run does not
+             * jump the trace; with no treadmill both of these are 0. */
+            s_tgt_dist_m    = ts_target.distance_m;
+            s_tgt_elapsed_s = (float)ts_target.elapsed_s;
+            s_tgt_prev_tick = now_tick;
+            s_tgt_seeded    = true;
         }
-        if (s_slot < P2_FIRST) {
-            uint8_t now = (uint8_t)ts_target.elapsed_s;
-            uint8_t delta = (uint8_t)(now - s_prev_elapsed); /* wraps mod 256 */
-            s_prev_elapsed = now;
-            if (delta > 0 && delta <= 2) {   /* ~3.76 Hz pages: 0 or 1 s */
-                s_tgt_dist_m += ts_target.speed_mps * (float)delta;
-            }
-        }
+
+        /* app_timer_cnt_diff_compute() handles the RTC's 24-bit wrap (every
+         * ~512 s at 32768 Hz), which a plain subtraction would not. */
+        uint32_t d_ticks = app_timer_cnt_diff_compute(now_tick, s_tgt_prev_tick);
+        s_tgt_prev_tick  = now_tick;
+
+        /* Effective tick rate, matching the SDK's own APP_TIMER_TICKS(): the
+         * raw RTC clock divided by the configured prescaler. Spelling it out
+         * keeps this correct if APP_TIMER_CONFIG_RTC_FREQUENCY ever moves off
+         * 0 (app_config.h), which a bare APP_TIMER_CLOCK_FREQ would not. */
+        float dt = (float)d_ticks /
+                   ((float)APP_TIMER_CLOCK_FREQ /
+                    (float)(APP_TIMER_CONFIG_RTC_FREQUENCY + 1));
+        s_tgt_elapsed_s += dt;
+        s_tgt_dist_m    += ts_target.speed_mps * dt;
+
+        ts_target.elapsed_s  = (uint32_t)s_tgt_elapsed_s;
         ts_target.distance_m = s_tgt_dist_m;
         ts = &ts_target;
     } else {
-        /* Re-seed from the actual distance next time target mode is enabled. */
+        /* Re-seed from the actual belt state next time target mode is
+         * enabled, so the trace picks up from where the belt actually is. */
         s_tgt_seeded = false;
     }
 

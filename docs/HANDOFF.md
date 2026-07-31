@@ -88,8 +88,12 @@ of `origin/main` — **nothing has been pushed**.
   belt speed, so a watch-recorded .fit captures exactly what the bridge
   commanded. Run the same workout in normal mode for the actual belt trace
   and diff the two .fits to score accuracy. OLED `A:T` + label `SDM:TGT` show
-  the mode. ⚠ Built and flashed, **not yet exercised on hardware**, and it does
-  **not** work with no treadmill connected — see next steps item 4.
+  the mode. Time and distance are integrated from the app_timer RTC, so it
+  works with **no treadmill connected** — the target still latches, because
+  `machine_set_speed()` writes `resolved_target_mps` before its connection
+  check. ⚠ Built and flashed 2026-07-31, **not yet exercised on hardware**:
+  the toggle is a physical button press and there is no ANT receiver on the
+  dev machine, so nobody has watched a broadcast yet.
 
 ## What was broken — now fixed (2026-07-31)
 
@@ -124,18 +128,20 @@ explained — it never worked, until now.
    DFU Bootloader, `make flash-dfu` reported `Device programmed.`, and the app
    came back up. Exercised twice. This is now the primary flashing route (SWD
    is down); see `docs/flashing.md` §8b.
-4. **`SDM:TGT` does not yet work for its stated purpose — testing with no
-   treadmill connected.** The distance integrator is driven off
-   `treadmill.elapsed_s`, which is populated *only* by FTMS treadmill data
-   notifications (`core/ftms_parse.c:41`) and zeroed on disconnect
-   (`firmware/ble_central.c:685`). With no treadmill in the loop it never
-   advances, so `delta` is always 0: broadcast distance stays flat and the SDM
-   page-1 time field (`elapsed_s % 256`, `core/ant_sdm_encode.c:27`) stays
-   pinned at 0. Speed is still carried, so the watch may show pace, but nothing
-   accumulates and a frozen time field risks the receiver treating the page as
-   stale. **Fix:** in target mode integrate from a local monotonic tick (the
-   existing `app_timer` heartbeat) instead of the treadmill's clock, and
-   synthesise the page's time field from the same tick.
+4. **Exercise `SDM:TGT` on hardware — nobody has watched a broadcast yet.**
+   Press button action 4 (label flips `SDM:ACT`→`SDM:TGT`, OLED row 0 shows
+   `A:T`, 2400 Hz chirp on / 700 Hz off), then confirm a paired watch sees the
+   footpod and that pace *and* distance both advance with no treadmill
+   connected. Untestable from the dev machine: the toggle is a physical button
+   and there is no ANT receiver here.
+
+   ~~Does not work with no treadmill connected~~ — **fixed 2026-07-31.** Time
+   and distance were integrated from `treadmill.elapsed_s`, which is populated
+   only by FTMS treadmill-data notifications (`core/ftms_parse.c:41`) and
+   zeroed on disconnect (`firmware/ble_central.c:685`), so with nothing
+   connected the delta was always 0 — distance flat, page-1 time field pinned
+   at 0. Both now integrate from the app_timer RTC on every TX event
+   (`firmware/ant_sdm.c`), which keeps running regardless of the belt link.
 5. Cosmetic: pause reports `timer=1(STOPPED)`, never `2(PAUSED)` on this
    watch. Both stop the belt; not worth chasing.
 6. **Score belt accuracy on hardware** — with the new `SDM:TGT` debug mode
