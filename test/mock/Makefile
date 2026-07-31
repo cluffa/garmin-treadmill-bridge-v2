@@ -15,6 +15,7 @@ test: $(LIB)
 	python3 test_workout_probe.py
 	python3 test_wkt_decode.py
 	python3 test_link_state.py
+	python3 test_script_header.py
 
 clean:
 	rm -f $(LIB)

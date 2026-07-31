@@ -1,14 +1,18 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.9"
-# Pinned, not "bless": the advertising behaviour this whole design rests on
-# (prioritize_local_name, the `len(name) > 10` drop-the-service-UUID rule —
-# see the comment on ADV_NAME below) is a bless 0.3.0 corebluetooth/server.py
-# implementation detail, not a documented contract. An unpinned upgrade can
-# change or remove it silently; the watch would simply stop finding the mock,
-# with nothing here to explain why.
 # dependencies = ["bless==0.3.0"]
 # ///
+# Inside the `/// script` block above, uv strips the leading "# " and parses the
+# rest as TOML — so prose there is a TOML syntax error, not a comment. Keep
+# explanations out here.
+#
+# bless is PINNED, not floating: the advertising behaviour this whole design
+# rests on (prioritize_local_name, and the `len(name) > 10` rule that drops
+# every service UUID from the advert — see the comment on ADV_NAME below) is a
+# bless 0.3.0 corebluetooth/server.py implementation detail, not a documented
+# contract. An unpinned upgrade can change or remove it silently; the watch
+# would simply stop finding the mock, with nothing here to explain why.
 """Mock nRF52840 bridge: a macOS BLE peripheral for debugging the watch data field.
 
 Advertises the A6ED control service so watch/garmin_data_field connects to this
