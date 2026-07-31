@@ -13,6 +13,7 @@ $(LIB): workout_probe.c $(CORE)/workout_ctrl.c
 
 test: $(LIB)
 	python3 test_workout_probe.py
+	python3 test_wkt_decode.py
 
 clean:
 	rm -f $(LIB)
