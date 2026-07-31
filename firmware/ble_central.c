@@ -772,6 +772,20 @@ static void policy_evaluate(void)
         s_have_manual) {
         return;
     }
+
+    /* SDM target-broadcast mode exists to exercise the bridge with no
+     * treadmill in the loop, so an automatic connect there is never wanted —
+     * it is the belt starting up under you while you are testing something
+     * else. Only the *automatic* path is blocked: a watch- or testboard-issued
+     * CONNECT still works, because that is an explicit instruction rather than
+     * the policy deciding on its own.
+     *
+     * An already-established link is deliberately left alone. Toggling the
+     * mode mid-run would otherwise stop a belt somebody is running on, which
+     * is worse than the problem this guard fixes. Use STOP to drop a link. */
+    if (app_state()->sdm_broadcast_target) {
+        return;
+    }
     int pick = connect_policy_choose(s_devs, s_ndev,
                                      s_have_saved ? &s_saved : NULL,
                                      ms_since_scan_start());
@@ -1152,6 +1166,14 @@ void ble_central_init(void)
  * scanning forever for nothing. */
 void ble_central_autostart(void)
 {
+    /* Same reasoning as the policy_evaluate() guard: don't go looking for a
+     * treadmill to reconnect to while the footpod is broadcasting the target.
+     * Unreachable at boot (the mode defaults off) — it matters if autostart is
+     * ever called again from a mode-aware path. */
+    if (app_state()->sdm_broadcast_target) {
+        NRF_LOG_INFO("central: SDM target mode — not auto-reconnecting");
+        return;
+    }
     if (!s_have_saved) {
         NRF_LOG_INFO("central: no saved device — idle until SCAN");
         return;

@@ -293,7 +293,12 @@ static const char *action_label(test_action_t a)
     case TEST_ACTION_INJECT:       return "INJECT 8.0";
     case TEST_ACTION_STOP:         return "STOP";
     case TEST_ACTION_SDM_TGT:
-        return app_state()->sdm_broadcast_target ? "SDM:TGT" : "SDM:ACT";
+        /* Every other label names what a press will DO, so this one must too.
+         * It used to report the *current* state instead ("SDM:TGT" while
+         * target mode was already on), which reads as the exact opposite in an
+         * action row and caused a real mix-up. Current state is on row 0
+         * (`A:T` = broadcasting target); this is the destination. */
+        return app_state()->sdm_broadcast_target ? "SDM:>ACT" : "SDM:>TGT";
     case TEST_ACTION_COUNT:
     default:                       return "?";
     }

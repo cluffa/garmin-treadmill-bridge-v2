@@ -133,7 +133,16 @@ explained — it never worked, until now.
    `A:T`, 2400 Hz chirp on / 700 Hz off), then confirm a paired watch sees the
    footpod and that pace *and* distance both advance with no treadmill
    connected. Untestable from the dev machine: the toggle is a physical button
-   and there is no ANT receiver here.
+   and there is no ANT receiver here. Also confirm the bridge no longer grabs
+   a treadmill on its own while the mode is on (see below).
+
+   ~~Auto-connects to a treadmill during standalone testing~~ — **fixed
+   2026-07-31.** `policy_evaluate()` and `ble_central_autostart()` bail out
+   while `sdm_broadcast_target` is set. Manual `CONNECT` still works, and an
+   existing link is deliberately not torn down (that would stop a belt
+   someone is running on). The action label also changed from a state readout
+   to `SDM:>TGT` / `SDM:>ACT` — it sat in the row that names the *next
+   action*, so reporting current state read as the exact opposite.
 
    ~~Does not work with no treadmill connected~~ — **fixed 2026-07-31.** Time
    and distance were integrated from `treadmill.elapsed_s`, which is populated

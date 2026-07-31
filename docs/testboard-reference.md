@@ -60,7 +60,7 @@ event dispatch inside an IRQ.
 | 1 | `CONN-NEXT`   | Connect to next available treadmill (`testboard_action_connect_next`) |
 | 2 | `INJECT 8.0`  | Inject a synthetic 15-byte workout frame (8.0 km/h target) into `workout_ctrl` |
 | 3 | `STOP`        | Stop/disconnect (`testboard_action_stop`)                       |
-| 4 | `SDM:TGT`     | Toggle footpod between actual belt speed and the commanded target speed (`sdm_broadcast_target`) — see below |
+| 4 | `SDM:>TGT` / `SDM:>ACT` | Toggle footpod between actual belt speed and the commanded target speed (`sdm_broadcast_target`) — see below |
 
 SCAN, CONN-NEXT, and STOP are `__attribute__((weak))` stubs that the radio
 layer (M3) overrides. INJECT works standalone (no radios needed) — it builds
@@ -70,12 +70,34 @@ a valid `A6ED0004` workout frame and feeds it directly to the platform-agnostic
 
 ## SDM target-broadcast mode (debug aid)
 
-`SDM:TGT` toggles `app_state()->sdm_broadcast_target`. When on, the ANT
+This action toggles `app_state()->sdm_broadcast_target`. When on, the ANT
 footpod broadcasts the **commanded target** speed (`resolved_target_mps`,
 what `workout_ctrl`/ctrl-dispatch last told the treadmill) instead of the
 actual belt speed, and distance is integrated from that target so the trace
-is self-consistent. The OLED row 0 `A:` indicator turns `T` and the action
-label reads `SDM:TGT` / `SDM:ACT`.
+is self-consistent.
+
+**Reading the two indicators.** Row 0 `A:` shows the *current* state (`T` =
+broadcasting target). The row 3 action label shows the *destination* of a
+press, like every other action: `SDM:>TGT` means "press to switch to target",
+so target mode is currently **off**. (It previously showed current state in
+the action row, which reads as the exact opposite — that caused a real
+mix-up and is why the `>` is there.)
+
+**Auto-connect is suppressed while target mode is on.** The whole point of
+the mode is running with no treadmill in the loop, so the connect policy would
+otherwise reach out and start a belt mid-test. Both `policy_evaluate()` and
+`ble_central_autostart()` bail out early (`firmware/ble_central.c`). Two
+deliberate limits:
+
+- **Only the automatic path is blocked.** A watch- or testboard-issued
+  `CONNECT` still connects — that is an explicit instruction, not the policy
+  acting on its own.
+- **An existing link is left alone.** Toggling the mode does not disconnect,
+  because doing so would stop a belt someone may be running on. Use `STOP` to
+  drop a link before switching.
+
+Scanning itself keeps running, so `LIST` stays populated and a manual
+`CONNECT` remains possible.
 
 **Purpose:** score belt accuracy from the watch's .fit file. Run the same
 workout twice on the watch — once with the footpod in normal mode (the .fit
