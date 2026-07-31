@@ -88,6 +88,13 @@ def main():
     assert w.annotate(w.decode(frame(3, 0x01, 2, 0, 0))) == "non-speed target"
     assert w.annotate(w.decode(frame(3, 0x01, 0, 2222, 2500))) == "speed step"
 
+    # Step fields all sentinel + a FLAG_SRC_* diagnostic bit: the frame says
+    # *why* no step made it out (see DataFieldView.mc _packFrame).
+    assert "pack threw an exception" in w.annotate(w.decode(frame(3, 0x02, 0xFF, 0, 0)))
+    assert "duration-value region" in w.annotate(w.decode(frame(3, 0x12, 0xFF, 0, 0)))
+    assert "no workout step resolved" in w.annotate(w.decode(frame(3, 0x04, 0xFF, 0, 0)))
+    assert "targetType missing" in w.annotate(w.decode(frame(3, 0x08, 0xFF, 0, 0)))
+
     # A SPEED-target step with lo=hi=0 must NOT be labeled "speed step": per
     # core/workout_ctrl.c:59 that resolves to a 0 mm/s midpoint and
     # decode_action() returns ACT_NONE for it — the same "belt held" outcome

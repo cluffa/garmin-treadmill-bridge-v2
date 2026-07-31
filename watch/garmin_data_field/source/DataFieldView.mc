@@ -13,7 +13,8 @@ import Toybox.System;
 // Frame layout must match workout_ctrl.h (little-endian, 15 bytes):
 //   [0]      version (1)
 //   [1]      timerState
-//   [2]      flags (bit0 = a step is present)
+//   [2]      flags (bit0 = a step is present; bits 1-4 are diagnostics,
+//                  see FLAG_SRC_* below — the bridge ignores them)
 //   [3]      intensity
 //   [4]      targetType (0 = speed)
 //   [5..6]   targetLow  (mm/s for a speed target)
@@ -24,6 +25,17 @@ import Toybox.System;
 class DataFieldView extends WatchUi.DataField {
     hidden const FRAME_VERSION = 1;
     hidden const FRAME_LEN = 15;
+
+    // flags bits (byte [2]). bit0 is the wire contract: a speed step is
+    // present. Bits 1-3 are diagnostics that say *why* a frame carries no
+    // step. workout_ctrl.c only reads bit0, so they are backward-compatible;
+    // they exist to disambiguate the three ways _packFrame can emit an
+    // all-sentinel frame, which are indistinguishable on the wire otherwise.
+    hidden const FLAG_HAS_STEP  = 0x01;
+    hidden const FLAG_SRC_CATCH = 0x02; // exception thrown while packing
+    hidden const FLAG_SRC_NULL  = 0x04; // both step accessors returned null
+    hidden const FLAG_SRC_NOTGT = 0x08; // step resolved, but targetType missing
+    hidden const FLAG_SRC_DUR   = 0x10; // throw was in the duration-value region
 
     hidden var mBle as CtrlBleDelegate or Null;
     hidden var mLastFrame as ByteArray or Null; // last frame actually sent
@@ -105,7 +117,10 @@ class DataFieldView extends WatchUi.DataField {
                 wStep = (mLastInfo has :currentWorkoutStep)
                     ? mLastInfo.currentWorkoutStep : null;
             }
-            if (wStep == null) { return f; }
+            if (wStep == null) {
+                f[2] = FLAG_SRC_NULL;
+                return f;
+            }
             if ((wStep has :intensity) && wStep.intensity != null) {
                 f[3] = wStep.intensity & 0xFF;
             }
@@ -114,9 +129,15 @@ class DataFieldView extends WatchUi.DataField {
                 wStep = wStep.step;
             }
 
-            if (!(wStep has :targetType)) { return f; }
+            if (!(wStep has :targetType)) {
+                f[2] = FLAG_SRC_NOTGT;
+                return f;
+            }
             var tt = wStep.targetType;
-            if (tt == null) { return f; }
+            if (tt == null) {
+                f[2] = FLAG_SRC_NOTGT;
+                return f;
+            }
             f[4] = tt & 0xFF;
 
             // Only a speed target maps to a belt command.
@@ -138,9 +159,17 @@ class DataFieldView extends WatchUi.DataField {
             if ((wStep has :durationType) && wStep.durationType != null) {
                 f[9] = wStep.durationType & 0xFF;
             }
-            var dv = ((wStep has :durationValue) && wStep.durationValue != null)
-                ? wStep.durationValue : 0;
-            _u32(f, 10, dv);
+            // durationValue can come back as a Long on some steps; coerce to
+            // Number so _u32's byte writes cannot hit an implicit Long->Byte
+            // conversion (suspected throw point, see the bring-up log).
+            try {
+                var dv = ((wStep has :durationValue) && wStep.durationValue != null)
+                    ? wStep.durationValue.toNumber() : 0;
+                _u32(f, 10, dv);
+            } catch (e2) {
+                f[2] |= FLAG_SRC_DUR;
+                throw e2;
+            }
 
             // Stash the resolved speed for the display (mm/s midpoint -> km/h).
             var mmps = (low > 0 && high > 0) ? ((low + high) / 2) : (low > 0 ? low : high);
@@ -151,10 +180,15 @@ class DataFieldView extends WatchUi.DataField {
             return f;
         } catch (e) {
             System.println("DataFieldView _packFrame error: " + e.getErrorMessage());
+            // Keep the partially-built frame and mark it: each field write is
+            // atomic and f started as a well-formed base frame, so whatever
+            // got populated before the throw is still trustworthy and tells
+            // us where the throw happened.
+            f[2] |= FLAG_SRC_CATCH;
+            mHasSpeedTarget = false;
+            mTargetKmh = 0.0f;
+            return f;
         }
-        mHasSpeedTarget = false;
-        mTargetKmh = 0.0f;
-        return _newBaseFrame(timerState);
     }
 
     hidden function _bytesEqual(a as ByteArray, b as ByteArray or Null) as Boolean {

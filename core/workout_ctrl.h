@@ -20,7 +20,11 @@
  * ---- Wire format (little-endian, WORKOUT_FRAME_LEN bytes) ------------------
  *   [0]     version           (WORKOUT_FRAME_VERSION)
  *   [1]     timerState        (Activity.TIMER_STATE_*: 0 off,1 stopped,2 paused,3 on)
- *   [2]     flags             (bit0 = a workout step is present)
+ *   [2]     flags             (bit0 = a workout step is present; bits 1-4 are
+ *                              watch-side diagnostics the bridge ignores:
+ *                              0x02 pack threw, 0x04 no step resolved,
+ *                              0x08 step resolved but targetType missing,
+ *                              0x10 throw was in the duration-value region)
  *   [3]     intensity         (Activity.WORKOUT_INTENSITY_*: 0 active,1 rest,…)
  *   [4]     targetType        (Activity.WORKOUT_STEP_TARGET_*: 0 = speed)
  *   [5..6]  targetLow         (uint16; for a speed target, mm/s)

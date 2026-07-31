@@ -130,6 +130,18 @@ def annotate(d: dict) -> str:
         # Observed on hardware 2026-07-31: a workout's rest steps arrive as
         # intensity=1(rest) tgt=2(OPEN) flags=0x00. See
         # docs/superpowers/test-logs/2026-07-31-mock-bridge-bringup.md.
+        #
+        # Diagnostic bits 1-3 (FLAG_SRC_* in DataFieldView.mc) say *why* a
+        # no-step frame was emitted. The bridge ignores them, so their presence
+        # identifies the exact _packFrame return path on the watch.
+        if d["flags"] & 0x02:
+            # bit4 (0x10) narrows the throw to the duration-value region.
+            where = " (duration-value region)" if d["flags"] & 0x10 else ""
+            return "no speed step (pack threw an exception" + where + ")" + note
+        if d["flags"] & 0x04:
+            return "no speed step (no workout step resolved)" + note
+        if d["flags"] & 0x08:
+            return "no speed step (step resolved but targetType missing)" + note
         if d["intensity"] == 0xFF and d["target"] == 0xFF:
             return "no step reported - free run, or the field could not resolve the step" + note
         return "structured step present but not flagged as a speed target" + note

@@ -24,13 +24,17 @@ their `.example` files or the build fails — see `CLAUDE.md`.
 
 ## Current state — one line
 
-**The watch connects to the bridge and sends frames; the frames do not contain
-the speed target.** Transport is proven end to end. The Connect IQ data field is
-the broken link.
+**The speed-target path is fixed and fully proven against the mock: the data
+field emits clean speed frames (`flags=0x01`), the belt command fires, the
+keepalive holds, and pause/resume/end all behave.** Root cause was a Monkey C
+type throw (`durationValue` is a Long; `_u32` assigned Long→Byte) that fired
+after the frame was built, so the old catch discarded it and every speed step
+arrived all-sentinel. See
+`docs/superpowers/test-logs/2026-07-31-fix-speed-target-flag-bits.md`.
 
 ## Test status
 
-`make host-test` — **all green** as of `db19621`:
+`make host-test` — **all green** as of the fix commit:
 
 | Gate | Count | What |
 |---|---|---|
@@ -57,6 +61,10 @@ of `origin/main` — **nothing has been pushed**.
 
 ## What works
 
+- **Speed target end to end** — clean `flags=0x01` frames with full target +
+  duration, `ACT_SPEED` from the real `workout_ctrl.c`, 30 s keepalive,
+  pause→`ACT_STOP`, resume→re-command, end-of-activity → belt untouched.
+  Acceptance rows 3–6 all PASS against the mock (2026-07-31).
 - **Three-radio concurrency** — the core architectural risk v2 existed to test.
   BLE peripheral + BLE central + ANT master held ~366 s with zero faults, belt
   tracking target, on a **real iFit treadmill**. See
@@ -68,66 +76,40 @@ of `origin/main` — **nothing has been pushed**.
 - **The mock rig itself** — decode, link inference, and firmware-sourced belt
   prediction all behaved through a full workout.
 
-## What is broken — the current blocker
+## What was broken — now fixed (2026-07-31)
 
-**The data field never emits a speed target.** Across a full structured workout
-(warmup → 5 × 5:55/mi + rest → cooldown), all 13 frames arrived with
-`flags=0x00` and **not one** carried `tgt=0(SPEED)`. Full evidence:
-`docs/superpowers/test-logs/2026-07-31-mock-bridge-bringup.md`.
+**The data field never emitted a speed target.** Across the original full
+structured workout, all 13 frames arrived with `flags=0x00` and not one carried
+`tgt=0(SPEED)`. Root cause, found with diagnostic flag bits (`FLAG_SRC_*` in
+`DataFieldView.mc`, ignored by the bridge): `_packFrame()` threw **after**
+building a complete frame — `wStep.durationValue` is a Long on pace-target
+steps and `_u32`'s Long→Byte byte writes throw in Monkey C — and the old
+`catch` discarded the frame, so every speed step went out as an all-sentinel
+base frame. Fix: `dv.toNumber()` coercion, plus keeping the partial frame in
+the catch (marked with bit `0x02`). Full story:
+`docs/superpowers/test-logs/2026-07-31-fix-speed-target-flag-bits.md`.
 
-| Frame shape | Count | Maps to |
-|---|---|---|
-| `intensity=2` | 2 | warmup |
-| `intensity=1(rest) tgt=2(OPEN)` | 4 | the rests |
-| `intensity=255 tgt=255` (all sentinel) | **5** | **the 5 work sets** |
-| `intensity=3` | 1 | cooldown |
-
-The field resolves warmup, rest and cooldown steps and reports their intensity
-and target type correctly, then goes completely blind on exactly the steps
-carrying the speed target. Five all-sentinel frames for five work sets.
-
-Since **both** `f[3]` (intensity) and `f[4]` (targetType) stay at `0xFF`, three
-paths in `DataFieldView._packFrame` can produce that frame:
-
-1. `if (wStep == null) return f;` (`DataFieldView.mc:108`) — `Activity.getCurrentWorkoutStep()`
-   *and* the `info.currentWorkoutStep` fallback both returned null.
-2. The `catch` block (`DataFieldView.mc:152`), which discards everything and
-   returns a fresh `_newBaseFrame()`.
-3. A non-null step whose `intensity` is absent/null **and** which has no
-   `targetType` attribute (`DataFieldView.mc:117`). Less likely — the rest steps
-   read `intensity` fine — but it is not excluded by the frame.
-
-They are indistinguishable on the wire, and that ambiguity is the blocker.
-
-This supersedes the 2026-07-30 note that framed the problem as inconsistent
-*timing*. It is not a timing bug and `mWritePending` is not the suspect: the
-belt was never commanded because a speed target was never transmitted. The
-earlier "moving to another interval with a different target pace didn't always
-work" report is fully explained — it never worked.
+The 2026-07-30 "inconsistent timing" note was already retracted — it was never
+a timing bug; `mWritePending` is exonerated. The earlier "moving to another
+interval with a different target pace didn't always work" report is fully
+explained — it never worked, until now.
 
 ## Next steps, in priority order
 
-1. **Disambiguate the three paths.** `flags` has seven spare bits and
-   `workout_ctrl.c` ignores unknown ones, so this is cheap and
-   backward-compatible: set bit1 in the `catch`, bit2 on the null-step return,
-   bit3 on the missing-`targetType` return. One more run against `make
-   mock-bridge` then says which it is. The `catch` path's `System.println` goes
-   nowhere reachable on real hardware — do not rely on it.
-2. **If it throws:** find the property access that raises on a pace-target step.
-   `targetValueLow`/`targetValueHigh` are the first suspects — a pace target may
-   hand back a type `_targetToWire`'s `.toFloat()` does not accept.
-3. **If it is null:** both step accessors returning null *only* for
-   speed-target steps needs a minimal reproduction. Likely a CIQ system-version
-   behaviour worth pinning down before working around it.
-4. **Re-run the acceptance table** in the bring-up log once a speed target
-   reaches the wire. Rows 3–7 (speed target → `ACT_SPEED`, the 30 s keepalive
-   re-assert, resume, stale reset) are **all still unproven** — nothing was ever
-   latched, so nothing downstream of the latch has been exercised.
-5. **Retest pause vs. end-of-activity.** The run reported a pause but the frame
-   said `timer=1(STOPPED)`, not `2(PAUSED)`. Both map to the same belt action so
-   it is cosmetic today, but the two are not distinguishable in that log.
-6. Then the M4.2 Part B hardware rows (B1/B4/B5) — watch pace tracking belt
-   speed with the treadmill link up. See `docs/finishing-plan.md`.
+1. **M4.2 Part B hardware rows (B1/B4/B5)** — real Garmin watch → real bridge
+   → real treadmill: watch pace tracks belt speed with the treadmill link up
+   (footpod pairing proved ANT alone, never concurrently). See
+   `docs/finishing-plan.md`. The mock-side acceptance table (rows 3–6) is now
+   fully proven; Part B is the remaining gate.
+2. **Stale-reset on watch disconnect** (acceptance row 7 territory):
+   `workout_ctrl_reset()` on link loss is implemented — confirm the belt stops
+   when the watch walks away mid-run, on hardware.
+3. **DFU ctrl command end-to-end** (`b4c3845`) — still untested.
+4. Cosmetic: pause reports `timer=1(STOPPED)`, never `2(PAUSED)` on this
+   watch. Both stop the belt; not worth chasing.
+
+All code milestones (M0–M4.2 core) are complete; only the physical-hardware
+concurrency gate remains, per `docs/finishing-plan.md`.
 
 ## Known gaps and non-goals
 
