@@ -31,7 +31,10 @@ INDENT = " " * 20
 
 
 class Malformed(Exception):
-    """Frame the firmware would drop (silently) on length or version."""
+    """Frame the firmware would drop (silently): shorter than FRAME_LEN, or the
+    wrong version. A frame *longer* than FRAME_LEN is not malformed — see
+    decode()'s docstring.
+    """
 
 
 def _name(table, v):
@@ -40,8 +43,17 @@ def _name(table, v):
 
 
 def decode(buf: bytes) -> dict:
-    if len(buf) != FRAME_LEN:
-        raise Malformed(f"len={len(buf)} (expected {FRAME_LEN})")
+    """Decode the leading FRAME_LEN bytes of `buf`.
+
+    Matches core/workout_ctrl.c:76's `len < WORKOUT_FRAME_LEN` check: only a
+    frame *shorter* than FRAME_LEN is rejected. A longer frame is accepted and
+    decoded from its first FRAME_LEN bytes, exactly as workout_ctrl_on_frame()
+    would act on it — the trailing bytes are reported via "extra_bytes" for the
+    caller to log, not silently dropped, since decoding fewer frames than the
+    firmware would act on is itself a divergence worth catching.
+    """
+    if len(buf) < FRAME_LEN:
+        raise Malformed(f"len={len(buf)} (expected >= {FRAME_LEN})")
     if buf[0] != FRAME_VERSION:
         raise Malformed(f"ver={buf[0]} (expected {FRAME_VERSION})")
     lo, hi = struct.unpack_from("<HH", buf, 5)
@@ -56,6 +68,7 @@ def decode(buf: bytes) -> dict:
         "dur_type": buf[9],
         "dur_value": struct.unpack_from("<I", buf, 10)[0],
         "rep": buf[14],
+        "extra_bytes": len(buf) - FRAME_LEN,
     }
 
 
@@ -82,11 +95,17 @@ def annotate(d: dict) -> str:
 
     'FREE RUN' is called out because a free run legitimately produces no belt
     movement, which has been mistaken for a fault twice (watch/README.md).
+
+    An oversized frame (extra_bytes > 0) gets a trailing note — worth knowing
+    about, but not a rejection; the firmware acts on its first FRAME_LEN bytes
+    same as decode() did here.
     """
+    extra = d.get("extra_bytes", 0)
+    note = f" [+{extra}B oversized, ignored]" if extra else ""
     if d["timer"] != 3:
-        return "timer not running"
+        return "timer not running" + note
     if not (d["flags"] & 0x01):
-        return "FREE RUN - no structured step"
+        return "FREE RUN - no structured step" + note
     if d["target"] != 0:
-        return "non-speed target"
-    return "speed step"
+        return "non-speed target" + note
+    return "speed step" + note

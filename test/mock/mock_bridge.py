@@ -43,7 +43,6 @@ CTRL_WKT = "A6ED0004-D344-460A-8075-B9E8EC90D71B"  # write (workout telemetry)
 ADV_NAME = "TMILL-MOCK"
 
 LIB = pathlib.Path(__file__).with_name("libworkout_probe.so")
-ACT = {0: "no change", 1: "ACT_SPEED", 2: "ACT_STOP"}
 
 # workout_ctrl.c holds static state, and it is reached from two threads: the
 # CoreBluetooth callback thread (writes) and the asyncio loop (1 Hz tick).

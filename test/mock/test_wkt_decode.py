@@ -51,6 +51,27 @@ def main():
         else:
             raise AssertionError(f"expected Malformed for {needle}")
 
+    # A 14-byte frame (one short of FRAME_LEN) is still rejected — the boundary
+    # is strictly "shorter than FRAME_LEN", matching core/workout_ctrl.c:76's
+    # `len < WORKOUT_FRAME_LEN`.
+    try:
+        w.decode(frame(3, 0x01, 0, 2222, 2500)[:14])
+    except w.Malformed as e:
+        assert "len=14" in str(e), str(e)
+    else:
+        raise AssertionError("expected Malformed for a 14-byte frame")
+
+    # A 16-byte frame (one longer than FRAME_LEN) is NOT rejected: the firmware
+    # accepts len >= WORKOUT_FRAME_LEN and acts on the frame, so the mock must
+    # decode it too rather than reporting MALFORMED for something the bridge
+    # would actually obey. The extra byte is still surfaced, as a note rather
+    # than a rejection.
+    oversized = frame(3, 0x01, 0, 2222, 2500) + b"\x00"
+    d = w.decode(oversized)
+    assert d["extra_bytes"] == 1
+    assert d["timer"] == 3 and d["target"] == 0  # decoded from the first FRAME_LEN bytes
+    assert "oversized" in w.annotate(d)
+
     # Content annotations describe the frame, not the belt policy.
     assert "FREE RUN" in w.annotate(w.decode(frame(3, 0x00, 0xFF, 0, 0)))
     assert w.annotate(w.decode(frame(2, 0x00, 0xFF, 0, 0))) == "timer not running"
