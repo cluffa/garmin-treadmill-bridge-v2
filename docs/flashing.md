@@ -245,10 +245,10 @@ ioreg -p IOUSB -l -w 0 | grep -E '"USB Product Name"|"USB Serial Number"'
   connect latency; retry. Check the Pico wiring and that `pyocd list` sees it.
 - **Console enumerates but zero data / no reply** — you're likely on the Pico's
   UART node. See §7 and select the "Garmin Treadmill Bridge" serial.
-- **Enumerates but interfaces don't bind (`!matched`, no TTY)** — historically a
-  **cable/port** problem (marginal USB-C cable or host controller), not firmware:
-  Nordic's own bootloader failed identically until we swapped cable/port. Try a
-  known-good data cable and a direct port.
+- **App enumerates but interfaces don't bind (`!matched`, no TTY)** — run
+  **`make usb-kick`**. This is normal on every app boot, not a fault. It is
+  **not** the cable (an earlier version of this note said it was — that was
+  wrong, and it cost two sessions; see §8a).
 - **App won't boot after a flash** (`pc` in `0x000F4000+`, `s_heartbeat_cnt`
   garbage) — the settings-page CRC does not match the app, so the bootloader
   fails boot validation and keeps control. **Run `make flash-full`** (§4); it is
@@ -260,3 +260,88 @@ ioreg -p IOUSB -l -w 0 | grep -E '"USB Product Name"|"USB Serial Number"'
   signing key matches the bootloader's embedded public key.
 - **Reading RAM/RTT over SWD requires a halt**, which breaks live USB enumeration.
   Do quick `halt … go` reads; don't hold the core halted while testing USB.
+- **`pyocd` reports `SWD/JTAG communication failure (No ACK)` on every clock and
+  both connect modes** — the DP IDCODE read never completes, so the SWD link is
+  dead at the wire. The probe is fine (it enumerates and `pyocd list` sees it);
+  re-seat GP2→SWCLK, GP3→SWDIO and especially GND. Nothing host-side fixes this
+  — but you do **not** need SWD to flash: use §8b.
+
+### 8a. The app's USB console needs `make usb-kick` after every boot
+
+The running app enumerates as `"Garmin Treadmill Bridge"` (1915:521F) but macOS
+leaves it with **zero `IOUSBHostInterface` children**, so `AppleUSBACMData`
+never attaches and no `/dev/cu.usbmodem<SERIAL>1` exists.
+
+```sh
+make usb-kick        # bus reset + SET_CONFIGURATION(1); prints the console node
+```
+
+What was actually measured (2026-07-31), so nobody re-derives it:
+
+- EP0 is **healthy**. `GET_DESCRIPTOR` for the device descriptor *and* the
+  75-byte multi-packet configuration descriptor both transfer fine over libusb.
+  A marginal cable cannot serve a multi-packet EP0 IN and then selectively
+  stall one specific request — so the long-standing "swap the USB-C cable"
+  diagnosis (2026-07-22, repeated in the 2026-07-27 handoff) is **wrong**.
+- Right after boot the device **stalls** `GET_CONFIGURATION` and
+  `SET_CONFIGURATION`. macOS asks once, gets a stall, gives up, and never
+  retries — hence no interfaces, permanently.
+- A USB **bus reset followed by a manual `SET_CONFIGURATION(1)`** succeeds, and
+  macOS then instantiates the interfaces; the tty appears within a second.
+  Verified twice from a cold boot, including immediately after a DFU update.
+- The **bootloader never needs this** — it binds its CDC interfaces on its own.
+
+Likely cause, unproven: `app_usbd` runs with
+`APP_USBD_CONFIG_EVENT_QUEUE_ENABLE 1` (`firmware/app_config.h`), so
+`SET_CONFIGURATION` is completed from `app_usbd_event_queue_process()` in the
+main loop, while descriptor reads are answered lower down. `usb_cdc_log_init()`
+is the *last* thing `main()` brings up (`firmware/main.c:179`, after the
+SoftDevice, BLE stack, ANT stack, advertising and the central), so macOS's
+one-shot configure lands in a window where the queue is not being pumped. The
+bootloader boots straight into a tight loop and wins the same race. **The
+measurement that would settle it:** log every `APP_USBD_EVT_*` with a timestamp
+and see whether `SET_CONFIGURATION` arrives before the main loop starts
+pumping. If confirmed, the real fix is to bring USB up earlier or pump the
+queue during init — not a cable.
+
+### 8b. Flashing with no working SWD
+
+The USB-DFU route (§6) needs no probe, and the `DFU` ctrl command means it needs
+no probe to *enter* DFU either. This is the route that worked on 2026-07-31 with
+the SWD link dead:
+
+```sh
+make firmware                                   # build
+make dfu                                        # signed package
+make usb-kick                                   # console node appears
+printf 'DFU\n' > /dev/cu.usbmodem<SERIAL>1      # app reboots into the bootloader
+make flash-dfu SERIAL=/dev/cu.usbmodem<SERIAL>1 # -> "Device programmed."
+make usb-kick                                   # console back on the new app
+```
+
+The bootloader re-enumerates under the **same** VID:PID and serial, so the tty
+path is unchanged across the reboot. Worst case the board sits in the
+bootloader: a **power cycle** clears GPREGRET and boots the valid app, so this
+route cannot strand you.
+
+`DFU` is also on the BLE ctrl characteristic `A6ED0002`, which would let you
+enter the bootloader without a console at all — **untested**, only `STATUS` and
+`LIST` have been exercised over BLE. It would be an *entry* path only: the
+bootloader image carries no BLE transport (its strings contain no `DfuTarg`
+advertising name), so the package still has to go across over USB.
+
+### 8c. What still needs the SWD probe
+
+USB-DFU covers routine app updates, but the package is `--application` only and
+the route depends on the app running well enough to serve the `DFU` command:
+
+- **SoftDevice, bootloader or UICR changes** — `flash-full` / `flash-sd` only.
+- **An app that passes CRC validation and then crashes at runtime.** The
+  bootloader boots it, it dies, and you get no console and no BLE. (An
+  *invalid* app is fine — the bootloader auto-enters DFU and its own USB binds
+  without `usb-kick`.)
+- **RTT and any halted-core inspection.**
+
+So keep the probe wired even though you can flash without it — and note that as
+of 2026-07-31 the SWD link is down (see §8, "No ACK"), which means there is
+currently **no recovery path** for the second case above.

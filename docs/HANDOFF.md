@@ -16,11 +16,18 @@ and broadcasts back as an ANT footpod so the watch records real pace.
 make host-test     # everything that runs without hardware (see Test status)
 make firmware      # build the nRF52840 image
 make mock-bridge   # macOS BLE peripheral that impersonates the bridge
+make usb-kick      # make the app's USB console node appear (needed after EVERY boot)
 ```
 
 Flashing, wiring and the SWD/DFU gotchas are in `docs/flashing.md`. A fresh clone
 needs `firmware/ant_network_key.h` and `firmware/ant_license.mk` copied from
 their `.example` files or the build fails — see `CLAUDE.md`.
+
+**Flashing right now: SWD is dead, use USB-DFU.** `pyocd` cannot read the DP
+IDCODE at any clock or connect mode, so the Pico↔XIAO SWD wiring needs
+re-seating before `flash-full` will work again. No probe is needed in the
+meantime — `docs/flashing.md` §8b is the full no-SWD recipe, and it is how the
+2026-07-31 image was flashed.
 
 ## Current state — one line
 
@@ -75,6 +82,14 @@ of `origin/main` — **nothing has been pushed**.
   against the mock.
 - **The mock rig itself** — decode, link inference, and firmware-sourced belt
   prediction all behaved through a full workout.
+- **SDM target-broadcast debug mode** — testboard button action `SDM:TGT`
+  makes the ANT footpod broadcast the commanded target speed
+  (`resolved_target_mps`, distance integrated from it) instead of the actual
+  belt speed, so a watch-recorded .fit captures exactly what the bridge
+  commanded. Run the same workout in normal mode for the actual belt trace
+  and diff the two .fits to score accuracy. OLED `A:T` + label `SDM:TGT` show
+  the mode. ⚠ Built and flashed, **not yet exercised on hardware**, and it does
+  **not** work with no treadmill connected — see next steps item 4.
 
 ## What was broken — now fixed (2026-07-31)
 
@@ -104,9 +119,33 @@ explained — it never worked, until now.
 2. **Stale-reset on watch disconnect** (acceptance row 7 territory):
    `workout_ctrl_reset()` on link loss is implemented — confirm the belt stops
    when the watch walks away mid-run, on hardware.
-3. **DFU ctrl command end-to-end** (`b4c3845`) — still untested.
-4. Cosmetic: pause reports `timer=1(STOPPED)`, never `2(PAUSED)` on this
+3. ~~**DFU ctrl command end-to-end** (`b4c3845`)~~ — **PROVEN on hardware
+   2026-07-31.** `DFU` over the USB console rebooted the board into the Secure
+   DFU Bootloader, `make flash-dfu` reported `Device programmed.`, and the app
+   came back up. Exercised twice. This is now the primary flashing route (SWD
+   is down); see `docs/flashing.md` §8b.
+4. **`SDM:TGT` does not yet work for its stated purpose — testing with no
+   treadmill connected.** The distance integrator is driven off
+   `treadmill.elapsed_s`, which is populated *only* by FTMS treadmill data
+   notifications (`core/ftms_parse.c:41`) and zeroed on disconnect
+   (`firmware/ble_central.c:685`). With no treadmill in the loop it never
+   advances, so `delta` is always 0: broadcast distance stays flat and the SDM
+   page-1 time field (`elapsed_s % 256`, `core/ant_sdm_encode.c:27`) stays
+   pinned at 0. Speed is still carried, so the watch may show pace, but nothing
+   accumulates and a frozen time field risks the receiver treating the page as
+   stale. **Fix:** in target mode integrate from a local monotonic tick (the
+   existing `app_timer` heartbeat) instead of the treadmill's clock, and
+   synthesise the page's time field from the same tick.
+5. Cosmetic: pause reports `timer=1(STOPPED)`, never `2(PAUSED)` on this
    watch. Both stop the belt; not worth chasing.
+6. **Score belt accuracy on hardware** — with the new `SDM:TGT` debug mode
+   (button action 4), run the same workout twice on the real watch/treadmill
+   (normal vs target broadcast) and diff the .fit speed traces. This path *is*
+   sound with a treadmill connected; only the no-treadmill case is broken
+   (item 4).
+7. **Re-seat the SWD wiring** (Pico GP2→SWCLK, GP3→SWDIO, GND→GND). Not
+   urgent — USB-DFU covers routine flashing — but `flash-full` is the only
+   recovery path if the app is ever left invalid.
 
 All code milestones (M0–M4.2 core) are complete; only the physical-hardware
 concurrency gate remains, per `docs/finishing-plan.md`.
@@ -117,7 +156,8 @@ concurrency gate remains, per `docs/finishing-plan.md`.
   `ACT_NONE` with no structured speed step, meaning "don't touch the belt". This
   has looked like a bug twice. It isn't. Driving the belt *requires* a structured
   workout with a speed target.
-- **Nothing is pushed to `origin`.** `main` is 74 commits ahead.
+- `main` is published to `origin` and in sync as of 2026-07-31. (An earlier
+  version of this line claimed nothing had ever been pushed — stale.)
 - **One treadmill connection at a time** is an invariant, not a limitation —
   never reintroduce simultaneous FTMS + iFit.
 - The mock does **not** emulate the ctrl grammar (`A6ED0002`/`0003`, `SCAN`/
@@ -400,30 +440,27 @@ and have completely different fixes:
 Expect `tgtType=0` for a speed target and `tgtType=255` when the watch knows of
 no structured step.
 
-### 4. USB CDC never completes enumeration — firmware exonerated
+### 4. ~~USB CDC never completes enumeration~~ — SOLVED 2026-07-31
 
-Unchanged from 2026-07-27 and **not** a blocker: RTT over SWD is a strictly
-better instrument for this work and is how the entire gate was run.
+**`make usb-kick`.** Bus reset + a manual `SET_CONFIGURATION(1)` on EP0, after
+which macOS instantiates the interfaces and `/dev/cu.usbmodem<SERIAL>1` appears
+within a second. Needed after every app boot. Full measurement trail and the
+remaining unproven root cause are in `docs/flashing.md` §8a.
 
-The device appears as `"Garmin Treadmill Bridge"` with `bNumConfigurations = 1`
-but **zero `IOUSBHostInterface` children** and no `/dev/cu.usbmodem*`. The USB
-state machine runs to completion (`USB-CDC initialized` → `USB power detected` →
-`USB ready` → `USBD started`), so `app_usbd_init()`, `app_usbd_class_append()`,
-`app_usbd_enable()` and `app_usbd_start()` all succeed. The **cable theory is
-disproven** (known-good replacement, identical signature). What remains is the
-configuration descriptor, a multi-packet EP0 IN transfer.
+Both earlier theories were wrong and should not be revived:
 
-Untested suspects, cheapest first:
-1. A different USB port / a different host machine. Only one Mac port tried.
-2. The XIAO's USB-C connector or D+/D- routing — a marginal joint can pass
-   low-speed EP0 setup and fail a longer multi-packet IN.
-3. The CDC class descriptor set itself. **Capture the actual bus traffic**
-   (USB analyser, or Wireshark + `XHC20` on macOS) and read the failing control
-   transfer — the one measurement nobody has taken; it would settle this in
-   minutes rather than another round of hypothesis-swapping.
+- **Not the cable / not the multi-packet EP0 IN.** libusb reads the device
+  descriptor *and* the full 75-byte configuration descriptor cleanly. What the
+  device actually stalls, right after boot, is `GET_CONFIGURATION` and
+  `SET_CONFIGURATION` — one specific pair of requests, which no cable fault can
+  select for.
+- **Not "firmware exonerated" either.** The USB state machine reaching
+  `USBD started` says the stack came up; it says nothing about whether the
+  event queue was being pumped when macOS issued its single configure attempt.
+  That is the live suspect (`docs/flashing.md` §8a).
 
-Discriminator: the Pico probe enumerates fully on the same machine and port
-family, so the host stack is fine; only the XIAO's link fails.
+The measurement that had never been taken was not a bus capture — it was simply
+issuing the control transfers by hand from the host.
 
 ### 5. Smaller items
 

@@ -7,7 +7,7 @@
 # anything the user sets.)
 
 .PHONY: host-test firmware dfu settings flash-dfu flash-full flash-sd flash-app \
-        dfu-enter reset clean help mock-bridge mock-test sideload
+        dfu-enter reset clean help mock-bridge mock-test sideload usb-kick
 
 GNU_INSTALL_ROOT ?= /Users/alex/.platformio/packages/toolchain-gccarmnoneeabi/bin/
 GNU_VERSION      ?= 7.2.1
@@ -31,6 +31,7 @@ help:
 	@echo "  make sideload               push the built .prg to the watch over MTP (watch plugged in)"
 	@echo "  watch/garmin_data_field     writes workout targets to A6ED0004"
 	@echo "  watch/garmin_ctrl_app       SCAN/CONNECT picker UI (A6ED0002/0003)"
+	@echo "  make usb-kick               make the app's USB console appear (needed after EVERY app boot)"
 	@echo "Package / flash (see docs/flashing.md — these consume an existing build):"
 	@echo "  make dfu                    signed USB-DFU package"
 	@echo "  make settings               bootloader settings page"
@@ -93,6 +94,13 @@ sideload:
 
 firmware:
 	$(MAKE) -C firmware $(FW_MAKE_ARGS)
+
+# macOS never issues SET_CONFIGURATION to the running app, so the CDC console
+# node never appears and the USB-DFU route is unreachable. This does the bus
+# reset + SET_CONFIGURATION(1) by hand. Needed after every app boot; the
+# bootloader does not need it. Full measurement trail: docs/flashing.md §8a.
+usb-kick:
+	@tools/usb_kick.py
 
 dfu settings flash-dfu flash-full flash-sd flash-app dfu-enter reset:
 	$(MAKE) -C firmware $(FW_MAKE_ARGS) $@
