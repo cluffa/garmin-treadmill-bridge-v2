@@ -7,7 +7,7 @@
 # anything the user sets.)
 
 .PHONY: host-test firmware dfu settings flash-dfu flash-full flash-sd flash-app \
-        dfu-enter reset clean help
+        dfu-enter reset clean help mock-bridge mock-test
 
 GNU_INSTALL_ROOT ?= /Users/alex/.platformio/packages/toolchain-gccarmnoneeabi/bin/
 GNU_VERSION      ?= 7.2.1
@@ -24,6 +24,8 @@ help:
 	@echo "Build:"
 	@echo "  make host-test              core/ unit tests (no toolchain needed)"
 	@echo "  make check-uuid             assert firmware/mock/watch agree on the A6ED UUID"
+	@echo "  make mock-test              mock-bridge unit tests (decoder + probe ABI)"
+	@echo "  make mock-bridge            run the macOS mock bridge (debug the watch data field)"
 	@echo "  make firmware               build the nRF52840 image"
 	@echo "Watch (Connect IQ) — see watch/README.md:"
 	@echo "  watch/garmin_data_field     writes workout targets to A6ED0004"
@@ -42,12 +44,23 @@ help:
 
 host-test: check-uuid
 	$(MAKE) -C test/host
+	$(MAKE) -C test/mock test
 
 # The watch discovers the bridge by filtering on the 128-bit A6ED service UUID,
 # so firmware/mock/CIQ disagreement is SILENT — the watch just never finds the
 # device. Cheap to check, so it runs as part of the standard gate.
 check-uuid:
 	@python3 test/check_uuid_contract.py
+
+# Mock bridge: a macOS BLE peripheral that impersonates this firmware so the
+# Garmin data field can be debugged without the hardware in the loop.
+# See docs/superpowers/specs/2026-07-30-mock-bridge-design.md.
+mock-test:
+	$(MAKE) -C test/mock test
+
+mock-bridge:
+	$(MAKE) -C test/mock
+	cd test/mock && ./mock_bridge.py
 
 firmware:
 	$(MAKE) -C firmware $(FW_MAKE_ARGS)
@@ -57,4 +70,5 @@ dfu settings flash-dfu flash-full flash-sd flash-app dfu-enter reset:
 
 clean:
 	$(MAKE) -C test/host clean
+	$(MAKE) -C test/mock clean
 	$(MAKE) -C firmware $(FW_MAKE_ARGS) clean

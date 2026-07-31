@@ -109,3 +109,43 @@ the list entry got the name moments later. Names reach `LIST` fine.
 The only residual wrinkle is a narrow race: a `LIST` issued in the window between
 the primary advert and the scan response can show one device nameless. Re-`LIST`
 and it resolves.
+
+## Debugging the data field without the hardware bridge
+
+`make mock-bridge` runs a macOS BLE peripheral (`test/mock/mock_bridge.py`) that
+advertises the same `A6ED0001` control service as the firmware. The data field
+cannot tell it apart from the real bridge, so you can iterate on watch code with
+the nRF52840 out of the loop entirely.
+
+It logs every frame written to `A6ED0004`, decoded, along with the belt command
+the firmware would actually have issued — that prediction comes from
+`core/workout_ctrl.c` itself, compiled to `libworkout_probe.so` and loaded
+through ctypes, so it cannot drift from the bridge.
+
+```
+21:04:31.882  ADV   TMILL-MOCK  A6ED0001-D344-460A-8075-B9E8EC90D71B
+21:04:33.104  WKT   #1  len=15 ver=1 timer=3(ON) flags=0x01 intensity=0(active)
+                        tgt=0(SPEED) lo=2222 hi=2500 mm/s (8.0-9.0 km/h) dur=5 300 rep=0
+                        -> ACT_SPEED 8.5 km/h   [speed step]
+21:04:33.104  LINK  frames arriving - watch attached (inferred from traffic; bless is_connected() is subscription-based and the data field never subscribes)
+21:04:43.108  idle  (no write - field sends on change only)
+21:05:03.900  KEEP  -> re-assert 8.5 km/h
+```
+
+Note that `LINK` is **inferred from write traffic**, not read from a BLE
+connection callback: bless's `is_connected()` reports subscribed centrals, and
+the data field never subscribes to anything (it only writes), so that API is
+always `False` here. The mock instead watches for writes to `A6ED0004` and
+declares the link stale after 120 s of silence — deliberately generous, since a
+steady free run can legitimately go tens of seconds between writes (the field
+sends on change, not on a timer).
+
+⚠ **Power the real bridge off first.** The data field pairs with the first
+device it finds advertising the service UUID; with both on air you will be
+debugging the wrong peer.
+
+A quiet log is usually correct — the field only writes when the frame changes,
+which is why an `idle` heartbeat prints every 10 s while connected.
+
+It does **not** emulate the ctrl grammar (`A6ED0002`/`0003`), so
+`garmin_ctrl_app` is not exercised by it.

@@ -25,6 +25,7 @@ FIRMWARE = ROOT / "firmware" / "ble_ctrl_svc.c"
 # Everything that must agree with the firmware, and how to find UUIDs in it.
 CONSUMERS = [
     ROOT / "test" / "mock" / "mock_watch.py",
+    ROOT / "test" / "mock" / "mock_bridge.py",
     ROOT / "watch" / "garmin_data_field" / "source" / "CtrlBleDelegate.mc",
     ROOT / "watch" / "garmin_ctrl_app" / "source" / "BridgeBle.mc",
 ]
