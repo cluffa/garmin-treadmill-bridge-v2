@@ -78,6 +78,18 @@ def main():
     assert w.annotate(w.decode(frame(3, 0x01, 2, 0, 0))) == "non-speed target"
     assert w.annotate(w.decode(frame(3, 0x01, 0, 2222, 2500))) == "speed step"
 
+    # A SPEED-target step with lo=hi=0 must NOT be labeled "speed step": per
+    # core/workout_ctrl.c:59 that resolves to a 0 mm/s midpoint and
+    # decode_action() returns ACT_NONE for it — the same "belt held" outcome
+    # as a free run, just from a structured step. The old generic label made
+    # the log print the self-contradicting "-> no change ... [speed step]".
+    assert w.annotate(w.decode(frame(3, 0x01, 0, 0, 0))) == \
+        "speed step, lo=hi=0 (no resolvable speed)"
+    # A one-sided target (only one of lo/hi zero) is still an ordinary speed
+    # step — decode_action() resolves it to the nonzero side.
+    assert w.annotate(w.decode(frame(3, 0x01, 0, 0, 2500))) == "speed step"
+    assert w.annotate(w.decode(frame(3, 0x01, 0, 2222, 0))) == "speed step"
+
     # Formatting names the values this repo actually pins down, and leaves
     # anything else raw rather than inventing CIQ enum names.
     text = w.format_frame(w.decode(frame(3, 0x01, 0, 2222, 2500, intensity=0)))

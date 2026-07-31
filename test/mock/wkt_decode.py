@@ -99,6 +99,18 @@ def annotate(d: dict) -> str:
     An oversized frame (extra_bytes > 0) gets a trailing note — worth knowing
     about, but not a rejection; the firmware acts on its first FRAME_LEN bytes
     same as decode() did here.
+
+    A speed-target frame with lo=hi=0 gets its own label rather than being
+    folded into the generic "speed step" case: core/workout_ctrl.c:59
+    (`decode_action()`) resolves lo=hi=0 to a 0 mm/s midpoint and returns
+    ACT_NONE for it — the same "don't touch the belt" outcome as a free run,
+    just reached from a structured step instead of no step at all. Calling
+    this "speed step" would make mock_bridge.py print the self-contradicting
+    `-> no change (deduplicated, or belt held)   [speed step]`, in exactly the
+    "why isn't the belt moving" situation that has already cost this project
+    debugging time twice. This function still only *describes* the frame — the
+    actual ACT_NONE/ACT_SPEED decision is decoded elsewhere, from the real
+    core/workout_ctrl.c via libworkout_probe.so, per the module docstring.
     """
     extra = d.get("extra_bytes", 0)
     note = f" [+{extra}B oversized, ignored]" if extra else ""
@@ -108,4 +120,6 @@ def annotate(d: dict) -> str:
         return "FREE RUN - no structured step" + note
     if d["target"] != 0:
         return "non-speed target" + note
+    if d["lo_mmps"] == 0 and d["hi_mmps"] == 0:
+        return "speed step, lo=hi=0 (no resolvable speed)" + note
     return "speed step" + note
