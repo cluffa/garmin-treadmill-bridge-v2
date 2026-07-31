@@ -766,10 +766,12 @@ def on_write(characteristic, value: bytearray) -> None:
 At the top of `main()`, before constructing the server:
 
 ```python
-    global probe
+    global probe, _last_write, _last_log
     probe = load_probe()
     probe.probe_reset()
 ```
+
+`_last_write` and `_last_log` must be in that `global` statement: both are assigned inside the loop, and without it Python treats them as locals and raises `UnboundLocalError` on the first iteration.
 
 and **replace the whole `connected` / `is_connected()` link-state mechanism from Task 1**, which the hardware gate proved cannot work here.
 
@@ -817,6 +819,12 @@ and replace the body of the `while True:` loop with:
 
             if linked and now - _last_write >= STALE_S:
                 linked = False
+                # Clearing _last_write is load-bearing, not tidiness: leaving it
+                # set sends the next iteration straight back into the "frames
+                # arriving" branch above, and the two LINK lines then oscillate
+                # at 1 Hz with a probe_reset() every ~2 s — which would drop the
+                # latched keepalive right through a long free run.
+                _last_write = None
                 # Drop the latched command so a stale keepalive does not survive
                 # into the next session.
                 with _probe_lock:
