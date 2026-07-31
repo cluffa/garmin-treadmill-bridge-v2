@@ -127,9 +127,9 @@ through ctypes, so it cannot drift from the bridge.
 21:04:33.104  WKT   #1  len=15 ver=1 timer=3(ON) flags=0x01 intensity=0(active)
                         tgt=0(SPEED) lo=2222 hi=2500 mm/s (8.0-9.0 km/h) dur=5 300 rep=0
                         -> ACT_SPEED 8.5 km/h   [speed step]
-21:04:33.104  LINK  frames arriving - watch attached (inferred from traffic; bless is_connected() is subscription-based and the data field never subscribes)
-21:04:43.108  idle  (no write - field sends on change only)
-21:05:03.900  KEEP  -> re-assert 8.5 km/h
+21:04:33.912  LINK  frames arriving - watch attached (inferred from traffic; bless is_connected() is subscription-based and the data field never subscribes)
+21:04:43.918  idle  (no write - field sends on change only)
+21:05:03.926  KEEP  -> re-assert 8.5 km/h
 ```
 
 Note that `LINK` is **inferred from write traffic**, not read from a BLE
