@@ -49,9 +49,13 @@ arrived all-sentinel. See
 | `test/host` | 9 suites | `ftms_parse` `ftms_devlist` `ifit_parse` `ctrl_dispatch` `ant_sdm_encode` `ifit_fsm` `connect_policy` `ctrl_frames` `workout_ctrl` |
 | `test/mock` | 4 suites | `test_workout_probe` `test_wkt_decode` `test_link_state` `test_script_header` |
 
-`make firmware` links clean (101528 text / 844 data / 15936 bss). Branch
-`feat/mock-bridge` was merged to `main` and deleted; `main` is 74 commits ahead
-of `origin/main` — **nothing has been pushed**.
+`make firmware` links clean (101928 text / 844 data / 15952 bss).
+
+**Currently flashed: `d5782ac`** (`TESTBOARD=1`), pushed over USB-DFU on
+2026-07-31 — see `docs/flashing.md` §8b. Verified running afterwards: product
+name back to `Garmin Treadmill Bridge`, `STATUS` answers on the console, and the
+heartbeat restarted from `alive 7` (a genuinely fresh boot, not the old image).
+`main` and `origin/main` are in sync at `d5782ac`.
 
 ## Architecture
 
@@ -61,7 +65,7 @@ of `origin/main` — **nothing has been pushed**.
 | `core/workout_ctrl.c` | The belt-control decision: 15-byte frame in, `ACT_NONE`/`ACT_SPEED`/`ACT_STOP` out, plus dedup and a ~30 s keepalive re-assert. |
 | `core/machine.h` | Facade that auto-detects FTMS (`0x1826`) and iFit (`0x1533`) into one device list and routes connect/speed/stop. |
 | `firmware/` | nRF5 SDK + S340 glue: BLE peripheral (watch-facing), BLE central (treadmill-facing), ANT master, USB-CDC console. `app_state.h` is the shared struct all three radios render from. |
-| `watch/garmin_data_field/` | **The main product path.** Packs the workout step into 15 bytes and writes it to `A6ED0004`. This is where the current bug is. |
+| `watch/garmin_data_field/` | **The main product path.** Packs the workout step into 15 bytes and writes it to `A6ED0004`. (Was the site of the speed-target bug fixed on 2026-07-31 — no longer outstanding.) |
 | `watch/garmin_ctrl_app/` | The SCAN/CONNECT device picker over `A6ED0002`/`0003`. |
 | `test/mock/mock_bridge.py` | macOS BLE peripheral impersonating the bridge, for watch work without hardware. |
 | `test/mock/workout_probe.c` | ctypes shim that compiles **the real `core/workout_ctrl.c`** into `libworkout_probe.so`, so the mock's predicted belt action is the firmware's own, never a Python reimplementation. |
@@ -82,6 +86,15 @@ of `origin/main` — **nothing has been pushed**.
   against the mock.
 - **The mock rig itself** — decode, link inference, and firmware-sourced belt
   prediction all behaved through a full workout.
+- **SDM cadence is broadcast as invalid, not zero** (`d5782ac`, 2026-07-31).
+  Page 2 previously sent `0x00` integer + `0x0` fraction, which in the SDM
+  profile is a *valid* reading of 0 strides/min rather than "no data" — so the
+  watch trusted the footpod and recorded a flat 0 spm for the whole run instead
+  of falling back to its own wrist cadence. Now `0xFF` in the integer byte and
+  `0xF` in byte 4's high nibble (`core/ant_sdm_encode.c`); the speed integer
+  still occupies that byte's low nibble, so only the cadence half changed.
+  Asserted by `test_ant_sdm_encode`. ⚠ **Flashed but not yet observed over the
+  air** — no ANT receiver on the dev machine; confirm from a recorded .fit.
 - **SDM target-broadcast debug mode** — testboard button action `SDM:TGT`
   makes the ANT footpod broadcast the commanded target speed
   (`resolved_target_mps`, distance integrated from it) instead of the actual
@@ -151,14 +164,22 @@ explained — it never worked, until now.
    connected the delta was always 0 — distance flat, page-1 time field pinned
    at 0. Both now integrate from the app_timer RTC on every TX event
    (`firmware/ant_sdm.c`), which keeps running regardless of the belt link.
-5. Cosmetic: pause reports `timer=1(STOPPED)`, never `2(PAUSED)` on this
+5. **Confirm the invalid-cadence encoding on a recorded run** — flashed in
+   `d5782ac` but never seen on the air. Record any run with the footpod paired
+   and check the cadence field in the resulting .fit: it should now carry
+   wrist-derived cadence instead of a flat 0 spm. If a watch ignores the
+   `0xFF`/`0xF` invalid encoding, the fallback is to transmit **SDM capabilities
+   page 22 (0x16)**, whose bitfield flags cadence as unsupported explicitly — we
+   do not send page 22 at all today, and adding it means a new slot in the
+   68-slot TX cycle in `firmware/ant_sdm.c`.
+6. Cosmetic: pause reports `timer=1(STOPPED)`, never `2(PAUSED)` on this
    watch. Both stop the belt; not worth chasing.
-6. **Score belt accuracy on hardware** — with the new `SDM:TGT` debug mode
+7. **Score belt accuracy on hardware** — with the new `SDM:TGT` debug mode
    (button action 4), run the same workout twice on the real watch/treadmill
    (normal vs target broadcast) and diff the .fit speed traces. This path *is*
    sound with a treadmill connected; only the no-treadmill case is broken
    (item 4).
-7. **Re-seat the SWD wiring** (Pico GP2→SWCLK, GP3→SWDIO, GND→GND). Not
+8. **Re-seat the SWD wiring** (Pico GP2→SWCLK, GP3→SWDIO, GND→GND). Not
    urgent — USB-DFU covers routine flashing — but `flash-full` is the only
    recovery path if the app is ever left invalid.
 
