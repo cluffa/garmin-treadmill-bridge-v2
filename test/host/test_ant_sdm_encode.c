@@ -29,6 +29,10 @@ int main(void) {
     ant_sdm_encode_page2(&b, p2);
     assert(p2[0] == 0x02 && (p2[4] & 0x0F) == 0x03 && p2[5] == 0x80);
     assert(p2[1] == 0xFF && p2[2] == 0xFF && p2[7] == 0x00);
+    /* cadence must be the SDM "invalid" encoding (0xFF integer, 0xF fraction),
+     * not 0x00 — a zero cadence is a *valid* 0 strides/min and stops the watch
+     * from falling back to its own wrist cadence. */
+    assert(p2[3] == 0xFF && (p2[4] & 0xF0) == 0xF0);
 
     /* stopped belt encodes zero speed */
     treadmill_state_t z = { .speed_mps = 0.0f, .distance_m = 0.0f,

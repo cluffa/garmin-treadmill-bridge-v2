@@ -29,7 +29,7 @@
  *
  * Cycle of 68 TX slots:
  *   0..63  page 1 (distance/speed)
- *   64..65 page 2 (cadence/status — zero cadence, treadmill has no stride)
+ *   64..65 page 2 (cadence/status — cadence invalid, treadmill has no stride)
  *   66     common page 80
  *   67     common page 81
  */
