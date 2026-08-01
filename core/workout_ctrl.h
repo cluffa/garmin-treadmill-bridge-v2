@@ -10,7 +10,8 @@
  *   - command it *on change* immediately (no fixed re-send cadence),
  *   - re-assert it on a slow keepalive in case a write was lost,
  *   - stop the belt when the activity is paused/stopped,
- *   - keep the belt moving through interval rest steps.
+ *   - drop the belt to a walk on interval rest steps that carry no speed
+ *     target of their own (they arrive with an OPEN target).
  *
  * Platform-agnostic: depends only on machine.h (no SoftDevice / nRF / ESP
  * includes), so both the nRF52840 and ESP32 control services share it. Each
@@ -25,7 +26,11 @@
  *                              0x02 pack threw, 0x04 no step resolved,
  *                              0x08 step resolved but targetType missing,
  *                              0x10 throw was in the duration-value region)
- *   [3]     intensity         (Activity.WORKOUT_INTENSITY_*: 0 active,1 rest,…)
+ *   [3]     intensity         (Activity.WORKOUT_INTENSITY_*: 0 active,1 rest,…;
+ *                              0xFF when no step resolved. The bridge acts on
+ *                              this: a rest step with no usable speed target
+ *                              is commanded to REST_SPEED_KMH rather than
+ *                              holding the work-interval speed.)
  *   [4]     targetType        (Activity.WORKOUT_STEP_TARGET_*: 0 = speed)
  *   [5..6]  targetLow         (uint16; for a speed target, mm/s)
  *   [7..8]  targetHigh        (uint16; for a speed target, mm/s)

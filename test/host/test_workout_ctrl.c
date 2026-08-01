@@ -21,19 +21,6 @@ bool   machine_stop(void) { g_stop_calls++; return true; }
 /* ---- frame builder ---- */
 static void put_u16(uint8_t *p, uint16_t v) { p[0] = v & 0xFF; p[1] = v >> 8; }
 
-/* timer_state, has_step, target_type, low/high in mm/s */
-static void frame(uint8_t *f, uint8_t timer, bool has_step, uint8_t target,
-                  uint16_t low_mmps, uint16_t high_mmps)
-{
-    memset(f, 0, WORKOUT_FRAME_LEN);
-    f[0] = WORKOUT_FRAME_VERSION;
-    f[1] = timer;
-    f[2] = has_step ? 0x01 : 0x00;
-    f[4] = target;
-    put_u16(f + 5, low_mmps);
-    put_u16(f + 7, high_mmps);
-}
-
 #define TIMER_ON 3
 #define TIMER_PAUSED 2
 #define TIMER_STOPPED 1
@@ -41,6 +28,31 @@ static void frame(uint8_t *f, uint8_t timer, bool has_step, uint8_t target,
 #define TGT_SPEED 0
 #define TGT_HR 1
 #define TGT_OPEN 2
+#define INT_ACTIVE 0
+#define INT_REST   1
+#define INT_NONE   0xFF   /* watch sentinel: no step resolved */
+
+/* timer_state, has_step, target_type, low/high in mm/s, intensity */
+static void frame_i(uint8_t *f, uint8_t timer, bool has_step, uint8_t target,
+                    uint16_t low_mmps, uint16_t high_mmps, uint8_t intensity)
+{
+    memset(f, 0, WORKOUT_FRAME_LEN);
+    f[0] = WORKOUT_FRAME_VERSION;
+    f[1] = timer;
+    f[2] = has_step ? 0x01 : 0x00;
+    f[3] = intensity;
+    f[4] = target;
+    put_u16(f + 5, low_mmps);
+    put_u16(f + 7, high_mmps);
+}
+
+/* Same, defaulting to an ACTIVE (work) step — what every pre-rest-speed test
+ * meant when it left byte [3] zeroed. */
+static void frame(uint8_t *f, uint8_t timer, bool has_step, uint8_t target,
+                  uint16_t low_mmps, uint16_t high_mmps)
+{
+    frame_i(f, timer, has_step, target, low_mmps, high_mmps, INT_ACTIVE);
+}
 
 static void reset_counts(void) { g_speed_calls = g_stop_calls = 0; g_last_speed = -1; }
 
@@ -93,8 +105,9 @@ int main(void)
     workout_ctrl_on_frame(f, sizeof f);
     assert(g_speed_calls == 1);
 
-    /* Rest step with an OPEN target (no speed) → hold; belt keeps moving
-     * (no stop, no new speed), and keepalive still re-asserts the held speed. */
+    /* ACTIVE step with an OPEN target (no speed) → hold; belt keeps moving
+     * (no stop, no new speed), and keepalive still re-asserts the held speed.
+     * Only intensity=REST gets the 4 km/h fallback — see the rest block below. */
     reset_counts();
     frame(f, TIMER_ON, true, TGT_OPEN, 0, 0);
     workout_ctrl_on_frame(f, sizeof f);
@@ -103,24 +116,75 @@ int main(void)
     assert(g_speed_calls == 1);          /* still holding the last work speed */
     assert(g_last_speed > 8.4f && g_last_speed < 8.6f);
 
-    /* Rest step WITH a slower speed target → belt drops to rest pace (moving). */
+    /* Rest step WITH an explicit speed target → the target wins over the
+     * 4 km/h rest fallback. */
     reset_counts();
-    frame(f, TIMER_ON, true, TGT_SPEED, 1389, 1389);   /* ~5.0 km/h */
+    frame_i(f, TIMER_ON, true, TGT_SPEED, 1389, 1389, INT_REST);   /* ~5.0 km/h */
     workout_ctrl_on_frame(f, sizeof f);
     assert(g_speed_calls == 1 && g_stop_calls == 0);
     assert(g_last_speed > 4.9f && g_last_speed < 5.1f);
 
-    /* Free run (no step) while running → leave the belt alone. */
+    /* Free run (no step) while running → leave the belt alone. The watch sends
+     * 0xFF sentinels for intensity/targetType when no step resolved, so this
+     * must not be mistaken for a rest step. */
     reset_counts();
-    frame(f, TIMER_ON, false, TGT_OPEN, 0, 0);
+    frame_i(f, TIMER_ON, false, 0xFF, 0, 0, INT_NONE);
     workout_ctrl_on_frame(f, sizeof f);
     assert(g_speed_calls == 0 && g_stop_calls == 0);
 
-    /* Non-speed target (HR) while running → hold, no command. */
+    /* Non-speed target (HR) on an ACTIVE step → hold, no command. */
     reset_counts();
     frame(f, TIMER_ON, true, TGT_HR, 150, 160);
     workout_ctrl_on_frame(f, sizeof f);
     assert(g_speed_calls == 0 && g_stop_calls == 0);
+
+    /* ---- rest steps drop the belt to a 4 km/h walk ---- */
+
+    /* Work → rest: the rest step arrives as intensity=1(rest) tgt=2(OPEN) with
+     * flags bit0 clear (observed on hardware 2026-07-31), and must command
+     * 4 km/h rather than holding the work speed. */
+    reset_counts();
+    workout_ctrl_reset();
+    frame(f, TIMER_ON, true, TGT_SPEED, 2361, 2361);       /* work ~8.5 km/h */
+    workout_ctrl_on_frame(f, sizeof f);
+    assert(g_speed_calls == 1 && g_last_speed > 8.4f && g_last_speed < 8.6f);
+
+    reset_counts();
+    frame_i(f, TIMER_ON, false, TGT_OPEN, 0, 0, INT_REST);
+    workout_ctrl_on_frame(f, sizeof f);
+    assert(g_speed_calls == 1 && g_stop_calls == 0);
+    assert(g_last_speed > 3.9f && g_last_speed < 4.1f);
+
+    /* Keepalive during rest re-asserts 4 km/h, not the work speed. */
+    reset_counts();
+    for (int i = 0; i < 30; i++) workout_ctrl_tick();
+    assert(g_speed_calls == 1);
+    assert(g_last_speed > 3.9f && g_last_speed < 4.1f);
+
+    /* Repeated rest frames dedup — one command per rest step, not per frame. */
+    reset_counts();
+    workout_ctrl_on_frame(f, sizeof f);
+    workout_ctrl_on_frame(f, sizeof f);
+    assert(g_speed_calls == 0 && g_stop_calls == 0);
+
+    /* Rest → work: back up to the work speed. */
+    reset_counts();
+    frame(f, TIMER_ON, true, TGT_SPEED, 2361, 2361);
+    workout_ctrl_on_frame(f, sizeof f);
+    assert(g_speed_calls == 1 && g_last_speed > 8.4f && g_last_speed < 8.6f);
+
+    /* A rest step whose speed target resolves to 0 falls back to 4 km/h. */
+    reset_counts();
+    frame_i(f, TIMER_ON, true, TGT_SPEED, 0, 0, INT_REST);
+    workout_ctrl_on_frame(f, sizeof f);
+    assert(g_speed_calls == 1 && g_stop_calls == 0);
+    assert(g_last_speed > 3.9f && g_last_speed < 4.1f);
+
+    /* Pausing during a rest step still stops the belt. */
+    reset_counts();
+    frame_i(f, TIMER_PAUSED, false, TGT_OPEN, 0, 0, INT_REST);
+    workout_ctrl_on_frame(f, sizeof f);
+    assert(g_stop_calls == 1 && g_speed_calls == 0);
 
     /* Malformed frames are ignored: bad version, short length. */
     reset_counts();

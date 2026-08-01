@@ -31,12 +31,12 @@ def load():
     return lib
 
 
-def frame(timer, has_step, target, lo, hi, version=1):
+def frame(timer, has_step, target, lo, hi, version=1, intensity=0xFF):
     f = bytearray(15)
     f[0] = version
     f[1] = timer
     f[2] = 0x01 if has_step else 0x00
-    f[3] = 0xFF
+    f[3] = intensity
     f[4] = target
     struct.pack_into("<HH", f, 5, lo, hi)
     f[9] = 0xFF
@@ -66,9 +66,23 @@ def main():
     lib.probe_reset()
     assert lib.probe_feed(frame(TIMER_ON, False, 0xFF, 0, 0), 15) == ACT_NONE
 
-    # A non-speed target holds the belt rather than commanding it.
+    # A non-speed target on an ACTIVE step holds the belt rather than
+    # commanding it.
     lib.probe_reset()
-    assert lib.probe_feed(frame(TIMER_ON, True, TGT_OPEN, 0, 0), 15) == ACT_NONE
+    assert lib.probe_feed(frame(TIMER_ON, True, TGT_OPEN, 0, 0, intensity=0), 15) == ACT_NONE
+
+    # A rest step is the exception: no speed target of its own, so the bridge
+    # walks the belt at REST_SPEED_KMH instead of holding the work speed. This
+    # is the shape hardware actually sends — flag clear, tgt=OPEN.
+    lib.probe_reset()
+    assert lib.probe_feed(frame(TIMER_ON, True, TGT_SPEED, 2778, 2778), 15) == ACT_SPEED
+    assert lib.probe_feed(frame(TIMER_ON, False, TGT_OPEN, 0, 0, intensity=1), 15) == ACT_SPEED
+    assert 3.9 < lib.probe_last_speed() < 4.1, lib.probe_last_speed()
+
+    # A rest step carrying its own speed target uses that target, not the walk.
+    lib.probe_reset()
+    assert lib.probe_feed(frame(TIMER_ON, True, TGT_SPEED, 1667, 1667, intensity=1), 15) == ACT_SPEED
+    assert 5.9 < lib.probe_last_speed() < 6.1, lib.probe_last_speed()
 
     # A bad version is dropped.
     lib.probe_reset()

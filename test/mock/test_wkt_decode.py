@@ -80,10 +80,17 @@ def main():
     # Flag clear but the step fields carry real values: NOT a free run. This is
     # the shape a workout's rest step actually arrives in — observed on hardware
     # 2026-07-31 as intensity=1(rest) tgt=2(OPEN) flags=0x00. Labelling it
-    # "free run" would point the reader at the wrong bug.
+    # "free run" would point the reader at the wrong bug, and it is the one
+    # frame shape the bridge answers by dropping to the walk speed.
     rest_step = w.annotate(w.decode(frame(3, 0x00, 2, 0, 0, intensity=1)))
     assert "free run" not in rest_step, rest_step
-    assert "structured step present" in rest_step, rest_step
+    assert rest_step == "rest step, no speed target", rest_step
+
+    # Same shape but an ACTIVE step: no speed target and no rest, so the bridge
+    # holds. It must not borrow the rest label.
+    active_open = w.annotate(w.decode(frame(3, 0x00, 2, 0, 0, intensity=0)))
+    assert active_open == "structured step present but not flagged as a speed target", \
+        active_open
     assert w.annotate(w.decode(frame(2, 0x00, 0xFF, 0, 0))) == "timer not running"
     assert w.annotate(w.decode(frame(3, 0x01, 2, 0, 0))) == "non-speed target"
     assert w.annotate(w.decode(frame(3, 0x01, 0, 2222, 2500))) == "speed step"
@@ -95,11 +102,12 @@ def main():
     assert "no workout step resolved" in w.annotate(w.decode(frame(3, 0x04, 0xFF, 0, 0)))
     assert "targetType missing" in w.annotate(w.decode(frame(3, 0x08, 0xFF, 0, 0)))
 
-    # A SPEED-target step with lo=hi=0 must NOT be labeled "speed step": per
-    # core/workout_ctrl.c:59 that resolves to a 0 mm/s midpoint and
-    # decode_action() returns ACT_NONE for it — the same "belt held" outcome
-    # as a free run, just from a structured step. The old generic label made
-    # the log print the self-contradicting "-> no change ... [speed step]".
+    # A SPEED-target step with lo=hi=0 must NOT be labeled "speed step":
+    # decode_action() resolves it to a 0 mm/s midpoint and treats it as no
+    # target, so an active step falls through to ACT_NONE — the same "belt
+    # held" outcome as a free run, just from a structured step. The old generic
+    # label made the log print the self-contradicting "-> no change ...
+    # [speed step]".
     assert w.annotate(w.decode(frame(3, 0x01, 0, 0, 0))) == \
         "speed step, lo=hi=0 (no resolvable speed)"
     # A one-sided target (only one of lo/hi zero) is still an ordinary speed

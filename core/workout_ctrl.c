@@ -8,8 +8,16 @@
 #define TIMER_STATE_PAUSED       2
 #define TIMER_STATE_ON           3
 #define WORKOUT_STEP_TARGET_SPEED 0
+#define WORKOUT_INTENSITY_REST    1
 
 #define FLAG_HAS_STEP            0x01
+
+/* Speed commanded on a rest step that carries no usable speed target of its
+ * own. Rest steps come off the watch as intensity=1(rest) with an OPEN target,
+ * so without this the belt would hold the work-interval speed straight through
+ * the rest. Commanded unconditionally, not as a floor: a work interval slower
+ * than this would be sped up, which is accepted (see the design doc). */
+#define REST_SPEED_KMH          4.0f
 
 /* Keepalive: re-assert the current speed every ~30 s (tick is called at ~1 Hz)
  * so a lost write self-heals without the old 5 s spam. */
@@ -35,6 +43,7 @@ static action_kind_t decode_action(const uint8_t *d, float *kmh)
 {
     uint8_t timer_state = d[1];
     uint8_t flags       = d[2];
+    uint8_t intensity   = d[3];
     uint8_t target_type = d[4];
     uint16_t low_mmps   = rd_u16(d + 5);
     uint16_t high_mmps  = rd_u16(d + 7);
@@ -43,23 +52,35 @@ static action_kind_t decode_action(const uint8_t *d, float *kmh)
      * or pre-start all mean "ensure the belt is stopped". */
     if (timer_state != TIMER_STATE_ON) return ACT_STOP;
 
-    /* Running with no structured step (free run) — leave the belt alone. */
-    if (!(flags & FLAG_HAS_STEP)) return ACT_NONE;
+    /* An explicit speed target always wins, on any step including a rest one.
+     * Only a speed target maps to belt speed — HR/power/cadence/open targets
+     * carry none, and a step with no target at all (free run) sets neither the
+     * flag nor a target type. */
+    if ((flags & FLAG_HAS_STEP) && target_type == WORKOUT_STEP_TARGET_SPEED) {
+        /* Resolve the range to a midpoint; tolerate a one-sided target. */
+        uint16_t mmps;
+        if (low_mmps && high_mmps)  mmps = (uint16_t)((low_mmps + high_mmps) / 2);
+        else                        mmps = low_mmps ? low_mmps : high_mmps;
+        if (mmps) {
+            *kmh = mmps * 0.0036f;    /* (mm/s / 1000) * 3.6 */
+            return ACT_SPEED;
+        }
+        /* A 0 mm/s target is no target at all — fall through. */
+    }
 
-    /* Only a speed target maps to belt speed. HR/power/cadence/open targets
-     * carry no belt speed, so hold whatever the belt is already doing — this
-     * is what keeps the belt moving through an OPEN interval rest step rather
-     * than stopping it (which would force a slow belt restart). */
-    if (target_type != WORKOUT_STEP_TARGET_SPEED) return ACT_NONE;
+    /* No usable speed target. A rest step means "ease off", so walk it out
+     * rather than holding the work-interval speed. Note the watch has been
+     * observed reporting warmup and cooldown as rest too, which is fine: a
+     * 4 km/h warmup/cooldown walk is the desired behaviour anyway. */
+    if (intensity == WORKOUT_INTENSITY_REST) {
+        *kmh = REST_SPEED_KMH;
+        return ACT_SPEED;
+    }
 
-    /* Resolve the range to a midpoint; tolerate a one-sided target. mm/s -> km/h. */
-    uint16_t mmps;
-    if (low_mmps && high_mmps)      mmps = (uint16_t)((low_mmps + high_mmps) / 2);
-    else                            mmps = low_mmps ? low_mmps : high_mmps;
-    if (mmps == 0) return ACT_NONE;   /* nonsensical 0 speed target — hold */
-
-    *kmh = mmps * 0.0036f;            /* (mm/s / 1000) * 3.6 */
-    return ACT_SPEED;
+    /* Free run (intensity is the watch's 0xFF sentinel), or an active step
+     * whose target is not a speed — hold whatever the belt is already doing
+     * rather than stopping it, which would force a slow belt restart. */
+    return ACT_NONE;
 }
 
 /* ---- command application ------------------------------------------------ */

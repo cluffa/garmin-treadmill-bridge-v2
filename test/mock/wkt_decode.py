@@ -24,6 +24,10 @@ TARGET = {0: "SPEED", 1: "HR", 2: "OPEN", 255: "unset"}
 INTENSITY = {0: "active", 1: "rest", 255: "unset"}
 DURATION = {255: "unset"}
 
+# WORKOUT_INTENSITY_REST — the one intensity the bridge acts on, by dropping
+# to a walk when the step carries no speed target (core/workout_ctrl.c).
+REST_INTENSITY = 1
+
 # Width of the timestamp + tag prefix that log() emits — "HH:MM:SS.mmm" (12) +
 # two spaces + a 5-wide tag + one space = 20 — so continuation lines sit under
 # the message column rather than 4 characters off it.
@@ -95,24 +99,28 @@ def annotate(d: dict) -> str:
 
     The no-step case is called out because it legitimately produces no belt
     movement, which has been mistaken for a fault twice (watch/README.md). It is
-    split in two: all-sentinel step fields really are "no step" (a free run, or a
-    step the field could not resolve — the frame cannot distinguish those), while
-    populated intensity/target fields mean a structured step WAS visible and the
-    field simply did not flag it as a speed target.
+    split in three: all-sentinel step fields really are "no step" (a free run, or
+    a step the field could not resolve — the frame cannot distinguish those); a
+    populated intensity of REST means a rest step, which the bridge answers by
+    dropping to its walk speed; any other populated intensity/target means a
+    structured step WAS visible and the field simply did not flag it as a speed
+    target, which the bridge answers by holding.
 
     An oversized frame (extra_bytes > 0) gets a trailing note — worth knowing
     about, but not a rejection; the firmware acts on its first FRAME_LEN bytes
     same as decode() did here.
 
     A speed-target frame with lo=hi=0 gets its own label rather than being
-    folded into the generic "speed step" case: core/workout_ctrl.c:59
-    (`decode_action()`) resolves lo=hi=0 to a 0 mm/s midpoint and returns
-    ACT_NONE for it — the same "don't touch the belt" outcome as a free run,
-    just reached from a structured step instead of no step at all. Calling
-    this "speed step" would make mock_bridge.py print the self-contradicting
-    `-> no change (deduplicated, or belt held)   [speed step]`, in exactly the
-    "why isn't the belt moving" situation that has already cost this project
-    debugging time twice. This function still only *describes* the frame — the
+    folded into the generic "speed step" case: `decode_action()` resolves
+    lo=hi=0 to a 0 mm/s midpoint and treats it as no target at all, so an
+    active step with lo=hi=0 falls through to ACT_NONE — the same "don't touch
+    the belt" outcome as a free run, just reached from a structured step
+    instead of no step at all. (On a REST step it instead falls through to the
+    walk speed.) Calling this "speed step" would make mock_bridge.py print the
+    self-contradicting `-> no change (deduplicated, or belt held)
+    [speed step]`, in exactly the "why isn't the belt moving" situation that
+    has already cost this project debugging time twice. This function still
+    only *describes* the frame — the
     actual ACT_NONE/ACT_SPEED decision is decoded elsewhere, from the real
     core/workout_ctrl.c via libworkout_probe.so, per the module docstring.
     """
@@ -144,6 +152,12 @@ def annotate(d: dict) -> str:
             return "no speed step (step resolved but targetType missing)" + note
         if d["intensity"] == 0xFF and d["target"] == 0xFF:
             return "no step reported - free run, or the field could not resolve the step" + note
+        if d["intensity"] == REST_INTENSITY:
+            # Called out separately from the generic no-speed-target case
+            # because the two now diverge in the belt: a rest step drops to the
+            # walk speed, anything else holds. Still a description of the
+            # frame, not the decision — see the module docstring.
+            return "rest step, no speed target" + note
         return "structured step present but not flagged as a speed target" + note
     if d["target"] != 0:
         return "non-speed target" + note

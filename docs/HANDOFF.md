@@ -33,7 +33,10 @@ meantime — `docs/flashing.md` §8b is the full no-SWD recipe, and it is how th
 
 **The speed-target path is fixed and fully proven against the mock: the data
 field emits clean speed frames (`flags=0x01`), the belt command fires, the
-keepalive holds, and pause/resume/end all behave.** Root cause was a Monkey C
+keepalive holds, and pause/resume/end all behave.** Rest steps now drop the belt
+to a 4 km/h walk instead of holding work pace (see Known gaps); that change is
+green on host + mock but **not yet flashed or run on hardware.** Root cause of
+the earlier speed-target blackout was a Monkey C
 type throw (`durationValue` is a Long; `_u32` assigned Long→Byte) that fired
 after the frame was built, so the old catch discarded it and every speed step
 arrived all-sentinel. See
@@ -62,7 +65,7 @@ heartbeat restarted from `alive 7` (a genuinely fresh boot, not the old image).
 | Path | Responsibility |
 |---|---|
 | `core/` | Platform-agnostic protocol logic. Compiles for the host with **no** nRF/SoftDevice/BLE includes — invariant, see `CLAUDE.md`. Parsers, FSMs, belt policy, ANT SDM encoding. |
-| `core/workout_ctrl.c` | The belt-control decision: 15-byte frame in, `ACT_NONE`/`ACT_SPEED`/`ACT_STOP` out, plus dedup and a ~30 s keepalive re-assert. |
+| `core/workout_ctrl.c` | The belt-control decision: 15-byte frame in, `ACT_NONE`/`ACT_SPEED`/`ACT_STOP` out, plus dedup, the 4 km/h rest-step walk, and a ~30 s keepalive re-assert. |
 | `core/machine.h` | Facade that auto-detects FTMS (`0x1826`) and iFit (`0x1533`) into one device list and routes connect/speed/stop. |
 | `firmware/` | nRF5 SDK + S340 glue: BLE peripheral (watch-facing), BLE central (treadmill-facing), ANT master, USB-CDC console. `app_state.h` is the shared struct all three radios render from. |
 | `watch/garmin_data_field/` | **The main product path.** Packs the workout step into 15 bytes and writes it to `A6ED0004`. (Was the site of the speed-target bug fixed on 2026-07-31 — no longer outstanding.) |
@@ -190,8 +193,16 @@ concurrency gate remains, per `docs/finishing-plan.md`.
 
 - ⚠ **A free run does not move the belt, by design.** `decode_action()` returns
   `ACT_NONE` with no structured speed step, meaning "don't touch the belt". This
-  has looked like a bug twice. It isn't. Driving the belt *requires* a structured
-  workout with a speed target.
+  has looked like a bug twice. It isn't. *Starting* the belt *requires* a
+  structured workout with a speed target.
+- **Rest steps drop to 4.0 km/h** (`REST_SPEED_KMH`). A rest step arrives as
+  `intensity=1(rest) tgt=2(OPEN) flags=0x00` — no speed target — and before
+  2026-07-31 that hit the `ACT_NONE` "hold" path, so the belt ran the work
+  interval speed straight through the rest. It now commands a 4 km/h walk. An
+  explicit speed target on the rest step still wins. Because the watch has been
+  seen reporting warmup and cooldown as `intensity=1` too, those get the same
+  4 km/h walk; that is accepted, not a bug. Design:
+  `docs/superpowers/specs/2026-07-31-rest-step-rest-speed-design.md`.
 - `main` is published to `origin` and in sync as of 2026-07-31. (An earlier
   version of this line claimed nothing had ever been pushed — stale.)
 - **One treadmill connection at a time** is an invariant, not a limitation —

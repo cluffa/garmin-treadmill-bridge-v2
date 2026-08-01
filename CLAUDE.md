@@ -111,8 +111,14 @@ The bridge between them is `core/machine.h` — a unified facade that auto-detec
 ⚠ **A free run does not move the belt, by design.** `decode_action()` returns
 `ACT_NONE` when no structured workout step is present, which means "don't touch
 the belt", and `workout_ctrl_tick()` keeps re-asserting the last latched speed.
-Driving the belt requires a structured workout with a **speed** target. This has
-looked like a bug twice; it isn't.
+*Starting* the belt requires a structured workout with a **speed** target. This
+has looked like a bug twice; it isn't.
+
+The one step that moves the belt without a speed target is a **rest** step
+(`intensity == WORKOUT_INTENSITY_REST`), which is commanded to
+`REST_SPEED_KMH` (4.0) so intervals walk out the rest instead of holding work
+pace. It is a plain unconditional set, not a floor: keep the free-run and
+active-step paths on `ACT_NONE`, or a free run starts moving the belt.
 
 `make host-test` runs `make check-uuid` first, which asserts firmware, mock, and
 both CIQ projects agree on the 128-bit A6ED base. Keep it that way: the watch
