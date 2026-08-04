@@ -152,8 +152,8 @@ received `S connected proto=iFit name='I_TL'`. Concurrent peripheral + central
 works, advertising is correct, and the ctrl service is fully functional **while a
 treadmill is connected**. So neither the backoff thrash nor radio contention
 explains the watch failure — both firmware hypotheses above are dead as
-*causes*, though the single-slot backoff remains a real latent defect worth
-fixing on its own merits.
+*causes*. The single-slot backoff was a real latent defect all the same, and is
+now **fixed** — see below.
 
 The fault is watch-side. The field reads `--`, which means *not connected and
 not scanning* — `mDevice` is null, so the scan itself never comes up. The
@@ -170,10 +170,10 @@ and distinguishes the three remaining candidates (profile registration failing,
 | Gate | Count | What |
 |---|---|---|
 | `make check-uuid` | 4 consumers | firmware / mock / both CIQ projects agree on the A6ED base |
-| `test/host` | 9 suites | `ftms_parse` `ftms_devlist` `ifit_parse` `ctrl_dispatch` `ant_sdm_encode` `ifit_fsm` `connect_policy` `ctrl_frames` `workout_ctrl` |
+| `test/host` | 10 suites | `ftms_parse` `ftms_devlist` `ifit_parse` `ctrl_dispatch` `ant_sdm_encode` `ifit_fsm` `connect_policy` `connect_backoff` `ctrl_frames` `workout_ctrl` |
 | `test/mock` | 4 suites | `test_workout_probe` `test_wkt_decode` `test_link_state` `test_script_header` |
 
-`make firmware` links clean (101928 text / 844 data / 15952 bss).
+`make firmware` links clean (102424 text / 844 data / 16016 bss).
 
 `make pace-test` is a **separate** gate (not part of `make host-test` — it needs
 `uv` and a recorded .FIT). It runs the scorer's own self-test against synthetic
@@ -351,6 +351,35 @@ All code milestones (M0–M4.2 core) are complete; only the physical-hardware
 concurrency gate remains, per `docs/finishing-plan.md`.
 
 ## Known gaps and non-goals
+
+- **Failed-attempt backoff is now per-address — FIXED 2026-08-03, built but not
+  yet exercised on hardware.** It tracked a single address, so it did nothing
+  whenever more than one machine was misbehaving: `attempt_failed()` overwrote
+  the slot on every *different* address, destroying the previous one's history,
+  and `backoff_blocks()` only matched the one address it happened to hold. With
+  two failing machines A and B the sequence was `fail A` → slot=A count 1,
+  `fail B` → slot=B count 1, `fail A` → slot=A count 1 — nothing ever blocked
+  and nothing ever escalated. Because the pick is pure `best_rssi` and RSSI
+  ordering flips between nearby machines, alternating is the *normal* case in a
+  room with several treadmills, not a corner case.
+
+  The policy moved to `core/connect_backoff.c` (4-slot table, least-recently-
+  failed eviction) and is host-tested — `test/host/test_connect_backoff.c`
+  covers the alternating-address regression directly, plus the escalation
+  schedule, expiry-preserves-count, per-address success, eviction, count
+  saturation, and 2^32 clock wrap. `firmware/ble_central.c` keeps only the
+  clock and the call sites.
+
+  Two deliberate behaviour changes: success now forgives **only** the address
+  that succeeded (clearing the whole table would let a working treadmill forgive
+  a broken one, and the next disconnect would hammer it again with no cooldown);
+  and the firmware feeds core a free-running ms clock accumulated from the RTC,
+  since the 24-bit counter wraps every ~512 s and cannot be passed as a
+  timestamp.
+
+  ⚠ This was **not** the cause of the watch-connect failure — the bridge was
+  exonerated before this was written. It is a fix on its own merits, and the
+  loop it prevents is still worth preventing.
 
 - ⚠⚠ **The "scan-wedge fix" was attempted 2026-08-03 and REVERTED — it broke the
   field outright. Do not re-apply it as written.** The *analysis* still looks

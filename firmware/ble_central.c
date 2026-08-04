@@ -19,6 +19,7 @@
 #include "ble_gap.h"
 #include "ble_gattc.h"
 #include "ble_srv_common.h"
+#include "connect_backoff.h"
 #include "connect_policy.h"
 #include "ftms_devlist.h"
 #include "ftms_parse.h"
@@ -140,16 +141,17 @@ static uint16_t s_gattc_retry_from;  /* from-handle for CHR / DESC retry */
  * human explicitly asked. It stays visible and manually selectable; only the
  * *automatic* policy pick is suppressed.
  *
- * Note the base step is roughly a no-op by design: policy_evaluate() already
- * runs on the 1 Hz policy tick, so a 1000 ms backoff just means "retry on the
- * next tick", which is what you want for a transient failure. The escalation is
- * what does the real work once a machine keeps failing. */
-#define BACKOFF_BASE_MS  1000u
-#define BACKOFF_MAX_MS  30000u
-static uint8_t  s_fail_addr[6];
-static bool     s_have_fail;
-static uint32_t s_fail_ticks;
-static uint8_t  s_fail_count;
+ * The policy and the escalation schedule live in core/connect_backoff.c, which
+ * is host-tested (test/host/test_connect_backoff.c). This file only supplies
+ * the clock and the call sites.
+ *
+ * It used to track a single address here, which did nothing whenever more than
+ * one machine was misbehaving: a failure on a different address overwrote the
+ * slot, so alternating failures each looked like the first and nothing was ever
+ * blocked. Since the pick is by RSSI and RSSI ordering flips between nearby
+ * machines, alternating is the normal case in a room with several treadmills.
+ * See the header for the worked example. */
+static connect_backoff_t s_backoff;
 
 /* iFit odometer: the frames carry no distance — integrate from speed. */
 static float            s_distance_m;
@@ -255,53 +257,54 @@ static void update_link_state(void)
 
 /* ---- Failed-attempt backoff helpers ------------------------------------------ */
 
-/* Current backoff for the tracked address: 1, 2, 4, 8, 16, 30, 30 … seconds. */
-static uint32_t backoff_ms(void)
+/* Free-running millisecond clock for core/connect_backoff.c.
+ *
+ * The RTC counter is 24 bits and wraps roughly every 512 s, so it cannot be
+ * handed over as a timestamp directly. Accumulate deltas instead — the same
+ * technique ant_sdm.c uses, and for the same reason.
+ * app_timer_cnt_diff_compute() handles the wrap, so this stays correct as long
+ * as it is called more often than every 512 s. It is: policy_evaluate() runs on
+ * the 1 Hz policy tick and calls through here every time.
+ *
+ * The result wraps at 2^32 ms (~49 days); connect_backoff uses unsigned
+ * subtraction throughout, so that wrap is handled too. */
+static uint32_t s_clock_ms;
+static uint32_t s_clock_ticks;
+
+static uint32_t backoff_now_ms(void)
 {
-    uint32_t ms = BACKOFF_BASE_MS;
-    for (uint8_t i = 1; i < s_fail_count; i++) {
-        if (ms >= BACKOFF_MAX_MS / 2) return BACKOFF_MAX_MS;
-        ms *= 2;
-    }
-    return ms;
+    uint32_t now   = app_timer_cnt_get();
+    uint32_t diff  = app_timer_cnt_diff_compute(now, s_clock_ticks);
+    s_clock_ticks  = now;
+    s_clock_ms    += (uint32_t)(((uint64_t)diff * 1000u) / APP_TIMER_TICKS(1000));
+    return s_clock_ms;
 }
 
-/* True while addr is still cooling down after one or more failed attempts.
- *
- * Deliberately does NOT clear s_fail_count when the window expires. An earlier
- * version did, and it silently defeated the whole escalation: the next failure
- * found no history and restarted at 1, so every retry logged "attempt 1 … 1000
- * ms" no matter how many times in a row the machine had failed. Observed on
- * hardware over four consecutive failures. Only attempt_succeeded() clears the
- * history — expiry just stops blocking. */
+/* True while addr is still cooling down after one or more failed attempts. */
 static bool backoff_blocks(const uint8_t *addr)
 {
-    if (!s_have_fail || memcmp(addr, s_fail_addr, 6) != 0) return false;
-    return app_timer_cnt_diff_compute(app_timer_cnt_get(), s_fail_ticks)
-           < APP_TIMER_TICKS(backoff_ms());
+    return connect_backoff_blocks(&s_backoff, addr, backoff_now_ms());
 }
 
 /* One attempt on addr never produced a usable link. Escalate its backoff. */
 static void attempt_failed(const uint8_t *addr)
 {
-    if (s_have_fail && memcmp(addr, s_fail_addr, 6) == 0) {
-        if (s_fail_count < 255) s_fail_count++;
-    } else {
-        memcpy(s_fail_addr, addr, 6);
-        s_have_fail  = true;
-        s_fail_count = 1;
-    }
-    s_fail_ticks = app_timer_cnt_get();
+    uint32_t ms = connect_backoff_note_failure(&s_backoff, addr,
+                                               backoff_now_ms());
     NRF_LOG_WARNING("central: attempt %u never became usable — "
                     "not auto-retrying for %u ms",
-                    (unsigned int)s_fail_count, (unsigned int)backoff_ms());
+                    (unsigned int)connect_backoff_count(&s_backoff, addr),
+                    (unsigned int)ms);
 }
 
-/* A link reached DISC_DONE, so whatever went wrong before is forgiven. */
-static void attempt_succeeded(void)
+/* A link reached DISC_DONE, so that machine's history is forgiven.
+ *
+ * Only that machine's. Clearing the whole table would let a treadmill that
+ * works forgive one that does not, and the next disconnect would go straight
+ * back to hammering the bad one with no cooldown. */
+static void attempt_succeeded(const uint8_t *addr)
 {
-    s_have_fail  = false;
-    s_fail_count = 0;
+    connect_backoff_note_success(&s_backoff, addr);
 }
 
 /* ---- GATTC retry helpers ----------------------------------------------------- */
@@ -506,7 +509,7 @@ static void cccd_subscribe(void)
 static void subscribed(void)
 {
     s_stage = DISC_DONE;
-    attempt_succeeded();   /* usable link — forgive any earlier failed attempts */
+    attempt_succeeded(s_target.addr);   /* usable link — forgive its history */
     NRF_LOG_INFO("central: subscribed — notifications active");
 
     /* Persist as last-connected only now, with notifications actually flowing.
@@ -1119,6 +1122,11 @@ void ble_central_init(void)
 {
     /* Register the iFit vendor base UUID with the SoftDevice. */
     APP_ERROR_CHECK(sd_ble_uuid_vs_add(&IFIT_BASE, &s_ifit_uuid_type));
+
+    /* Static storage is already zeroed, which is a valid empty table — this is
+     * for explicitness, and so a future re-init cannot inherit stale history. */
+    connect_backoff_reset(&s_backoff);
+    s_clock_ticks = app_timer_cnt_get();
 
     /* Load persisted last-connected device. */
     last_device_init();

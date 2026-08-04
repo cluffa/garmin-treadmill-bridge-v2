@@ -51,6 +51,7 @@ SRC_FILES += \
   $(CORE_DIR)/ifit_fsm.c \
   $(CORE_DIR)/ftms_devlist.c \
   $(CORE_DIR)/connect_policy.c \
+  $(CORE_DIR)/connect_backoff.c \
   $(CORE_DIR)/ant_sdm_encode.c \
 
 # M2 testboard sources (conditionally linked)
