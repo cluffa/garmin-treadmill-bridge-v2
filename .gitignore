@@ -73,3 +73,8 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# Recorded activities used by make pace-test. Real .FITs carry heart rate,
+# timestamps and a device serial — keep them out of the repo. See CLAUDE.md.
+*.fit
+*.FIT

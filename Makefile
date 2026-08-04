@@ -7,7 +7,8 @@
 # anything the user sets.)
 
 .PHONY: host-test firmware dfu settings flash-dfu flash-full flash-sd flash-app \
-        dfu-enter reset clean help mock-bridge mock-test sideload usb-kick
+        dfu-enter reset clean help mock-bridge mock-test sideload usb-kick \
+        pace-test pace-report pace-baseline ciq-build
 
 GNU_INSTALL_ROOT ?= /Users/alex/.platformio/packages/toolchain-gccarmnoneeabi/bin/
 GNU_VERSION      ?= 7.2.1
@@ -25,6 +26,8 @@ help:
 	@echo "  make host-test              core/ unit tests (no toolchain needed)"
 	@echo "  make check-uuid             assert firmware/mock/watch agree on the A6ED UUID"
 	@echo "  make mock-test              mock-bridge unit tests (decoder + probe ABI)"
+	@echo "  make pace-test              score belt pace tracking/lag from a .FIT vs baseline"
+	@echo "  make pace-report FIT=x.fit  full pace/lag report for one recorded workout"
 	@echo "  make mock-bridge            run the macOS mock bridge (debug the watch data field)"
 	@echo "  make firmware               build the nRF52840 image"
 	@echo "Watch (Connect IQ) — see watch/README.md:"
@@ -54,6 +57,39 @@ host-test: check-uuid
 check-uuid:
 	@python3 test/check_uuid_contract.py
 
+# Pace-tracking regression gate. Scores a .FIT recorded in SDM:TGT mode against
+# what the bridge should have commanded, and compares it to a stored baseline.
+# See docs/pace-lag-analysis.md for the method and the current numbers.
+#   make pace-test                                    # scorer self-check + baseline
+#   make pace-test FIT=test/my-new-run.fit            # score a new run
+#   make pace-report FIT=test/my-new-run.fit          # full report, no gate
+#   make pace-baseline FIT=test/my-new-run.fit BASELINE=test/baselines/x.json
+# Default is the 2026-08-03 POST-fix trace: 4 km/h rest steps, spread ANT
+# background pages, page-2 use state active. effective_lag 1.371 s.
+FIT      ?= test/23842067586_ACTIVITY.fit
+BASELINE ?= test/baselines/23842067586-post-fix.json
+# The hole-periodicity check must use the page-cycle length of the firmware that
+# RECORDED the trace, not the one in the tree today. Empty means "read
+# CYCLE_LEN x SDM_CHANNEL_PERIOD from firmware/ant_sdm.c", which is correct for
+# the post-fix default and stays correct as that file changes.
+#
+# Re-scoring the pre-fix trace needs its recording firmware's values passed
+# explicitly — it predates the background-page spread (68 slots x 0.25 s):
+#   make pace-test FIT=test/23806153959_ACTIVITY.fit \
+#                  BASELINE=test/baselines/23806153959-pre-fix.json SDM_CYCLE=17.0
+SDM_CYCLE ?=
+PACE_ARGS = $(if $(SDM_CYCLE),--sdm-cycle-s $(SDM_CYCLE))
+
+pace-test:
+	./test/pace_lag_report.py --self-test
+	./test/pace_lag_report.py $(FIT) -q $(PACE_ARGS) --baseline $(BASELINE)
+
+pace-report:
+	./test/pace_lag_report.py $(FIT) -v $(PACE_ARGS)
+
+pace-baseline:
+	./test/pace_lag_report.py $(FIT) -q $(PACE_ARGS) --write-baseline $(BASELINE)
+
 # Mock bridge: a macOS BLE peripheral that impersonates this firmware so the
 # Garmin data field can be debugged without the hardware in the loop.
 # See docs/superpowers/specs/2026-07-30-mock-bridge-design.md.
@@ -70,27 +106,34 @@ mock-bridge:
 # rebuild with the monkeyc invocation in watch/README.md.
 #   make sideload                          # data field (main product path)
 #   make sideload CIQ_PRJ=garmin_ctrl_app  # once that project is built
-# The Apps folder id is resolved live from mtp-filetree — libmtp's name paths
-# fail on Garmin ("Parent folder could not be found") and mtp-sendfile has no
-# -f flag, so a bare numeric id is the only reliable form. Re-runs can leave
-# duplicate app.prg files: Garmin's MTP delete is unreliable (PTP error 2002)
-# and its object enumeration is stale (mtp-files can report ids mtp-filetree
-# no longer shows), so the previous-file lookup below is best-effort and only
-# warns. Manual cleanup: mtp-delfile -n <older-id> (retry if it 2002s).
+# The mechanics live in tools/ciq_sideload.sh — every MTP call needs a timeout
+# (Garmin's stack blocks forever instead of erroring) and that is too much shell
+# to keep legible in a recipe. Notable knobs, all documented in the script:
+#   SIDELOAD_FORCE=1        send even when sources are newer than the .prg
+#   SIDELOAD_CHECK_DUPES=1  opt into the slow duplicate-app.prg scan
 CIQ_PRJ ?= garmin_data_field
 
 sideload:
-	@test -f watch/$(CIQ_PRJ)/out/app.prg || { echo "error: watch/$(CIQ_PRJ)/out/app.prg missing — build it first (watch/README.md)"; exit 1; }
-	@mtp-detect >/dev/null 2>&1 || { echo "error: watch not found over USB (MTP mode?)"; exit 1; }
-	@apps=$$(mtp-filetree 2>/dev/null | awk '$$1 ~ /^[0-9]+$$/ && $$2=="Apps" {print $$1; exit}'); \
-	  test -n "$$apps" || { echo "error: no GARMIN/Apps folder on the watch"; exit 1; }; \
-	  old=$$(mtp-files 2>/dev/null | awk -v apps="$$apps" '/File ID: /{id=$$3; want=0} /Filename: app\.prg/{want=1} want && /Parent ID: / && $$3==apps {print id; exit}'); \
-	  test -z "$$old" || echo "note: GARMIN/Apps already reports an app.prg (id $$old) — this run adds another copy; the watch installs the newest (MTP deletes are unreliable here, so no auto-remove)"; \
-	  echo "sideload watch/$(CIQ_PRJ)/out/app.prg -> GARMIN/Apps (folder id $$apps)"; \
-	  mtp-sendfile watch/$(CIQ_PRJ)/out/app.prg "$$apps" 2>/dev/null | grep -q 'New file ID' || { echo "error: mtp-sendfile failed"; exit 1; }
-	@newer=$$(find watch/$(CIQ_PRJ)/source watch/$(CIQ_PRJ)/resources -type f -newer watch/$(CIQ_PRJ)/out/app.prg 2>/dev/null | head -1); \
-	  test -z "$$newer" || echo "note: $$newer is newer than the .prg — rebuild before testing (watch/README.md)"
-	@echo "ok — unplug the watch; it installs GARMIN/Apps on eject/boot"
+	@tools/ciq_sideload.sh watch/$(CIQ_PRJ)
+
+# Build a Connect IQ project. Regenerates BuildInfo.mc (the stamp the data
+# field renders on its bottom row) and THEN runs monkeyc, so the stamp on the
+# watch always names the build it is part of — the whole point is that a
+# sideload which silently did not take stops being invisible.
+#   make ciq-build                          # data field
+#   make ciq-build CIQ_PRJ=garmin_ctrl_app
+# monkeyc is not on PATH; override CIQ_SDK/CIQ_KEY/CIQ_DEV as needed.
+CIQ_SDK ?= $(HOME)/Library/Application Support/Garmin/ConnectIQ/Sdks/connectiq-sdk-mac-9.2.0-2026-06-09-92a1605b2
+CIQ_KEY ?= $(HOME)/Documents/garmin_developer_key.der
+CIQ_DEV ?= fenix8solar51mm
+
+ciq-build:
+	@test -x "$(CIQ_SDK)/bin/monkeyc" || { echo "error: no monkeyc at $(CIQ_SDK)/bin — set CIQ_SDK (see watch/README.md)"; exit 1; }
+	@test -f "$(CIQ_KEY)" || { echo "error: developer key $(CIQ_KEY) not found — set CIQ_KEY"; exit 1; }
+	@tools/ciq_stamp.sh watch/$(CIQ_PRJ)
+	@cd watch/$(CIQ_PRJ) && "$(CIQ_SDK)/bin/monkeyc" -f monkey.jungle \
+	    -o out/app.prg -y "$(CIQ_KEY)" -d $(CIQ_DEV) -l 2
+	@echo "ok — built watch/$(CIQ_PRJ)/out/app.prg for $(CIQ_DEV)"
 
 firmware:
 	$(MAKE) -C firmware $(FW_MAKE_ARGS)

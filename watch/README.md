@@ -71,6 +71,36 @@ whose length or version does not match is dropped by the firmware (now logged as
 
 ## Building
 
+From the repo root:
+
+```sh
+make ciq-build                          # data field (main product path)
+make ciq-build CIQ_PRJ=garmin_ctrl_app  # the picker
+```
+
+That regenerates `source/BuildInfo.mc` and *then* runs `monkeyc -l 2`, in that
+order. Override `CIQ_SDK` / `CIQ_KEY` / `CIQ_DEV` if your paths differ.
+
+### The build stamp
+
+`source/BuildInfo.mc` is **generated** by `tools/ciq_stamp.sh` and holds a
+single `MMDD-HHMM` constant. The data field renders it on its bottom row next to
+the link state — `CONN 0803-1901` — so the watch itself reports which build is
+running.
+
+This exists because a sideload that silently did not take, or an install the
+watch skipped on eject, is otherwise indistinguishable from a working push: the
+field looks identical either way, and you end up debugging code that was never
+on the device. Read the stamp before trusting any before/after result.
+
+The file is **checked in**, not git-ignored, so a fresh clone still compiles
+with a plain `monkeyc` invocation. The one-line churn per build is deliberate —
+it records what was built. Always stamp before compiling; `make ciq-build` does,
+and `tools/ciq_sideload.sh` hard-errors when a source file is newer than the
+`.prg`.
+
+### By hand
+
 No `monkeyc` on `PATH`; invoke it from an installed SDK. Available here:
 
 ```sh
@@ -110,6 +140,21 @@ In the repo root the whole flow is one command (consumes the existing build;
 make sideload
 ```
 
+The mechanics live in `tools/ciq_sideload.sh` (the Makefile just calls it —
+every MTP call needs a timeout, which is too much shell to keep legible in a
+recipe). Knobs:
+
+| Env | Effect |
+|---|---|
+| `SIDELOAD_FORCE=1` | send even though sources are newer than the `.prg` |
+| `SIDELOAD_CHECK_DUPES=1` | opt into the slow duplicate-`app.prg` scan (off by default — see pitfalls) |
+| `SIDELOAD_LOOKUP_TIMEOUT` | seconds for the folder-id lookup (default 60) |
+| `SIDELOAD_SEND_TIMEOUT` | seconds for the transfer (default 240) |
+
+The staleness check runs **before** the transfer and is a hard error: pushing a
+`.prg` older than your edits and then debugging the old build on the watch is a
+trap worth failing loudly on.
+
 What it does, step by step (also useful when doing it by hand or verifying):
 
 ```sh
@@ -132,7 +177,7 @@ Then unplug the watch — it scans `GARMIN/Apps` on eject/boot and installs the
 app — and add the field to a run activity's data screen. If the watch already
 has a copy of the app installed, the sideload updates it.
 
-### Pitfalls (all observed 2026-07-31)
+### Pitfalls (observed 2026-07-31, plus the hang/wedge entries 2026-08-02)
 
 - **`mtp-sendfile` (libmtp 1.1.23) has no `-f` folder flag.** `-f 16777227` is
   parsed as the *local* filename and dies with `-f: stat: No such file or
@@ -148,9 +193,30 @@ has a copy of the app installed, the sideload updates it.
 - **Re-runs can leave duplicate `app.prg` files.** Garmin's MTP delete is
   unreliable (PTP error 2002) and its object enumeration is stale (`mtp-files`
   can report ids `mtp-filetree` no longer shows), so `make sideload` does not
-  auto-remove the previous copy — it warns instead. The watch installs the
-  newest copy (same app id), so duplicates are dev-noise, not corruption. To
-  clean up: `mtp-delfile -n <older-id>` and retry if it errors.
+  auto-remove the previous copy. The watch installs the newest copy (same app
+  id), so duplicates are dev-noise, not corruption. To clean up:
+  `mtp-delfile -n <older-id>` and retry if it errors.
+- **The duplicate scan is off by default** (2026-08-02). `mtp-files` walks every
+  object on the device, and it was measured hanging **~4 minutes at 0.0% CPU**
+  before the transfer had even started — all to print one warning that changes
+  nothing, since nothing is auto-removed either way. `SIDELOAD_CHECK_DUPES=1`
+  brings it back, now under a timeout and non-fatal.
+- **Garmin's MTP blocks instead of erroring.** With no watch attached,
+  `mtp-filetree` does not print "no raw devices" — it hangs. Every MTP call in
+  `ciq_sideload.sh` is therefore wrapped in a timeout, and a sessionless
+  `ioreg` vendor-id check (0x091e) short-circuits the not-plugged-in case
+  without opening a session at all.
+- **Killing an MTP command mid-session wedges libmtp.** Subsequent calls fail
+  with `PTP_ERROR_IO: failed to open session` / `LIBMTP PANIC: failed to open
+  session on second attempt`, and the USB-interface reset libmtp attempts on
+  its own does **not** clear it — only a physical unplug/replug does. The
+  script detects this signature and says so instead of letting you retry into
+  the same wall. Note a watch can be enumerated in `ioreg` (right VID:PID) and
+  still refuse to open a session — a partially-enumerated device shows no
+  `USB Product Name` in the USB tree.
+- **Don't pipe `mtp-sendfile` into `grep -q`.** `grep -q` exits at the first
+  match and closes the pipe, which can SIGPIPE the transfer mid-write. The
+  script captures output to a file and greps that.
 - Only `garmin_data_field` has been built in this repo
   (`watch/garmin_data_field/out/app.prg`); `garmin_ctrl_app` needs its own
   `monkeyc` build before it can be sideloaded.
