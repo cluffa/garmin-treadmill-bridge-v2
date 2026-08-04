@@ -188,7 +188,7 @@ needs it; decide whether to commit it before publishing anything.
 connect backoff and the CDC console FIFO — pushed over USB-DFU on **2026-08-03** — so it includes the spread ANT
 background pages and the page-2 use-state fix. Route: `make usb-kick`, then
 `DFU` on the console (SWD is still down), then
-`make flash-dfu SERIAL=/dev/cu.usbmodemC1B06A58A6371`; `nrfutil` reported
+`make flash-dfu SERIAL=/dev/cu.usbmodemXXXXXXXX1`; `nrfutil` reported
 `Device programmed.` Verified running afterwards: product name back to
 `Garmin Treadmill Bridge`, `STATUS` answers, and the heartbeat restarted at
 `alive 11` and climbed monotonically — a genuinely fresh boot with `.bss`
