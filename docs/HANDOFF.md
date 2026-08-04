@@ -42,6 +42,127 @@ after the frame was built, so the old catch discarded it and every speed step
 arrived all-sentinel. See
 `docs/superpowers/test-logs/2026-07-31-fix-speed-target-flag-bits.md`.
 
+**2026-08-01: the first real SDM:TGT interval run is recorded and scored.**
+`test/23806153959_ACTIVITY.fit` (10 × 10 s/10 s/10 s) is graded by
+`test/pace_lag_report.py` / `make pace-test`. Headline: every commanded speed
+change arrived, mean response lag **2.26 s**, and five speed samples were lost
+to a page-schedule artefact. Four fixes are in the tree for both (two watch-side
+for the lag, two ANT-side for the dropouts) — all green on host/mock/monkeyc,
+**none run on hardware yet**. Full analysis and the expected post-fix numbers:
+`docs/pace-lag-analysis.md`.
+
+**2026-08-03: all four pace fixes are CONFIRMED on hardware.**
+`test/23842067586_ACTIVITY.fit` (baseline `test/baselines/23842067586-post-fix.json`)
+vs the 2026-08-01 pre-fix trace:
+
+| Metric | 2026-08-01 pre-fix | 2026-08-03 post-fix |
+|---|---|---|
+| effective lag | 4.393 s | **1.371 s** |
+| transient (real response delay) | 2.234 s | **1.322 s** |
+| edge lag mean / median / max | 2.26 / 2.0 / 5.0 s | **1.41 / 1.0 / 3.0 s** |
+| best global shift τ* | 2.0 s | **1.0 s** |
+| dropout IAE | 6.31 m | **0.00 m** |
+| telemetry holes | 5 (2 recorded as *zero*) | 4 (**all "missing", none zero**) |
+| hole clustering | **0.984 — page schedule** | 0.50 @16 s / 0.38 @17 s — **not clustered** |
+
+Both ANT fixes land exactly as predicted: the page-2 use-state fix removed the
+false *zero* speed samples (2 → 0) so dropout area is now 0.00 m, and the
+background-page spread destroyed the periodicity (0.984 → not clustered at
+either cycle length). The 4 remaining holes are ordinary RF loss, not the
+bridge. Watch-side, edge lag landed at 1.41 s, mid-range of the predicted
+1.3–1.8 s.
+
+⚠ **Do not compare IAE totals across these two runs** — the workouts differ.
+Pre-fix rested at work pace (Σ|Δ| ≈ 3.2 m/s over 19 changes); post-fix rests at
+4 km/h (Σ|Δ| ≈ 39 m/s over 29 changes), so absolute area is ~12× larger by
+construction. `effective_lag` = IAE/Σ|Δ| is the comparable metric and exists for
+exactly this reason.
+
+Also confirmed: **rest steps drop to 4 km/h on real hardware** — the scorer
+auto-detects `walk` with `hold` fitting 3.9× worse (the pre-fix trace detects
+`hold` with `walk` 14.8× worse). And per-transition area equals |Δ|·τ to within
+1% on every step, i.e. the trace is pure transport delay with no mechanical
+ramp, which confirms the run really was in SDM:TGT mode.
+
+**2026-08-03: the data field stopped connecting to the bridge — investigation,
+no fix flashed yet.** Ruled out first, by direct check rather than inference:
+the watch-facing peripheral is *byte-identical* to the last known-good run
+(`git diff 31701d4 -- firmware/ble_ctrl_svc.c firmware/app_config.h
+firmware/main.c` is empty), `make check-uuid` passes all four consumers,
+advertising still carries the 128-bit UUID in the primary ADV packet
+(`ble_ctrl_svc.c:569-581`), link counts are `PERIPHERAL 1 + CENTRAL 1 = TOTAL 2`
+(`app_config.h:23-25`, *not* exhausted), scan duty is 20 ms/100 ms, the
+`BLE_GAP_EVT_CONNECTED` role filter is correct (`ble_ctrl_svc.c:313`), and the
+`.prg` was built for the right device. **No code change on either side explains
+it.**
+
+The user's own observation — it fails at a location where FTMS/iFit machines are
+always in range — points at the **single-slot failed-attempt backoff**
+(`ble_central.c:149-152`). `s_fail_addr[6]` tracks exactly *one* address, and
+`attempt_failed()` overwrites it whenever a different address fails. With two or
+more unusable machines in range whose RSSI ordering alternates (and
+`connect_policy_choose` is pure `best_rssi`), tracking thrashes A→B→A, so
+`backoff_blocks()` returns false every time and the escalation history is
+destroyed on each swap. The backoff never engages, and the bridge sits in the
+continuous connect/fail/retry loop that `f52db31` was written to stop — the loop
+this file's own comments (`ble_central.c:126-130`, `519-520`) describe as
+keeping "the radio busy enough to starve the watch link into a supervision
+timeout."
+
+That also explains why 2026-08-01 worked: it ran in **SDM:TGT mode**, where
+`80f01c8` suppresses auto-connect entirely, so the central never attempted a
+connection and the watch had the radio to itself. This is the M4.2 Part B
+concurrency row that has never been proven (next step 1).
+
+**Decisive discriminator, already logged — read the USB console during a
+failure:** repeated `central: attempt 1 never became usable` with *different*
+device names confirms the thrash. Escalating counts (`attempt 1, 2, 3 …`) on one
+name means the backoff is working and this is not the cause.
+
+**RESOLVED 2026-08-03: the watch's Connect IQ BLE stack was wedged. A watch
+reboot clears it; reinstalling the app does not.** After a power-cycle the field
+came straight back to `CONN` with a live target pace, on the *same* `.prg`
+(`0803-1932`) that had shown `--` minutes earlier. Since that build is
+functionally the Aug-2 code that worked that morning — the only differences are
+`BuildInfo.mc` and a string concat in `onUpdate`, neither touching BLE — the
+fault was never in the code. It was device state.
+
+The state survives app reinstall, which is what made it so confusing: the stamp
+proved a *new* build was running and the symptom persisted anyway. It also
+retro-explains the original "stopped connecting since Friday night" report —
+repeated test runs, an app that dies without reaching
+`onStop()`→`shutdown()`→`unpairDevice()`, and a BLE state that stays stuck until
+something power-cycles the watch.
+
+**Diagnostic order for any future "the field won't connect":**
+1. Read the **build stamp** off the field — is the code you think you shipped
+   actually running?
+2. **Reboot the watch.** Cheap, and it clears this whole failure class.
+3. Only then look at the bridge — and prove it with
+   `uv run --script test/mock/mock_watch.py`, which finds and connects to it from
+   the Mac in seconds.
+
+**Still unfixed:** the app has no recovery path of its own. See Known gaps — the
+2026-08-03 attempt at one made things worse and was reverted.
+
+**Update — the bridge is exonerated.** On 2026-08-03, with the bridge holding a
+live iFit link to `I_TL`, `test/mock/mock_watch.py` (which filters on the same
+128-bit UUID the CIQ app uses) found `TMILL-CTRL`, connected, subscribed, and
+received `S connected proto=iFit name='I_TL'`. Concurrent peripheral + central
+works, advertising is correct, and the ctrl service is fully functional **while a
+treadmill is connected**. So neither the backoff thrash nor radio contention
+explains the watch failure — both firmware hypotheses above are dead as
+*causes*, though the single-slot backoff remains a real latent defect worth
+fixing on its own merits.
+
+The fault is watch-side. The field reads `--`, which means *not connected and
+not scanning* — `mDevice` is null, so the scan itself never comes up. The
+attempted fix for that made it worse and was reverted (see Known gaps). Next
+evidence needed: `GARMIN/APPS/LOGS/CIQ_LOG.YML` off the watch, which records
+`BLE profile register status=`, `BLE scan start failed:`, and `BLE pair failed:`
+and distinguishes the three remaining candidates (profile registration failing,
+`setScanState` throwing, or `compute()` not running).
+
 ## Test status
 
 `make host-test` — **all green** as of the fix commit:
@@ -54,11 +175,36 @@ arrived all-sentinel. See
 
 `make firmware` links clean (101928 text / 844 data / 15952 bss).
 
-**Currently flashed: `d5782ac`** (`TESTBOARD=1`), pushed over USB-DFU on
-2026-07-31 — see `docs/flashing.md` §8b. Verified running afterwards: product
-name back to `Garmin Treadmill Bridge`, `STATUS` answers on the console, and the
-heartbeat restarted from `alive 7` (a genuinely fresh boot, not the old image).
-`main` and `origin/main` are in sync at `d5782ac`.
+`make pace-test` is a **separate** gate (not part of `make host-test` — it needs
+`uv` and a recorded .FIT). It runs the scorer's own self-test against synthetic
+signals with known answers, then grades `test/23806153959_ACTIVITY.fit` against
+`test/baselines/23806153959-pre-fix.json`. Both green.
+
+⚠ `test/23806153959_ACTIVITY.fit` is **untracked on purpose** — it is a real
+recorded activity (heart rate, timestamps, device serial). `make pace-test`
+needs it; decide whether to commit it before publishing anything.
+
+**Currently flashed: `4932511` + the uncommitted working tree** (`TESTBOARD=1`),
+pushed over USB-DFU on **2026-08-03 19:2x** — so it includes the spread ANT
+background pages and the page-2 use-state fix. Route: `make usb-kick`, then
+`DFU` on the console (SWD is still down), then
+`make flash-dfu SERIAL=/dev/cu.usbmodemC1B06A58A6371`; `nrfutil` reported
+`Device programmed.` Verified running afterwards: product name back to
+`Garmin Treadmill Bridge`, `STATUS` answers, and the heartbeat restarted at
+`alive 11` and climbed monotonically — a genuinely fresh boot with `.bss`
+zeroed, not the bootloader and not a stale RAM log.
+
+**Watch data field: build stamp `0803-1918`**, sideloaded 2026-08-03 (MTP file
+id 16779891). It carries the scan-wedge fix and the build stamp itself. **Read
+the stamp off the field's bottom row before trusting any result** — if it does
+not say `0803-1918`, the install did not take and you are testing old code.
+
+Note the pre-flash console check also caught the bridge sitting
+`connected:true, name:"I_TL"` with `LIST` showing that single iFit machine — the
+state the watch-connect failures are reported in. A *connected* link does not
+thrash the backoff, so if the watch still fails to connect against this build,
+the mechanism is contention from an established treadmill link rather than the
+connect/fail/retry loop.
 
 ## Architecture
 
@@ -131,6 +277,18 @@ explained — it never worked, until now.
 
 ## Next steps, in priority order
 
+0. ~~**Flash + sideload the 2026-08-01 pace fixes and re-run the scoring
+   workout.**~~ — **DONE 2026-08-03.** All four fixes confirmed on hardware; see
+   the table in Current state. New reference trace
+   `test/23842067586_ACTIVITY.fit`, baseline
+   `test/baselines/23842067586-post-fix.json`.
+
+   `make pace-test` now **defaults to this post-fix pair**, with `SDM_CYCLE`
+   empty so the page cycle is read from `firmware/ant_sdm.c` (16.00 s today) and
+   stays correct as that file changes. The pre-fix trace is still scorable, but
+   only with its own recording firmware's values passed explicitly:
+   `make pace-test FIT=test/23806153959_ACTIVITY.fit BASELINE=test/baselines/23806153959-pre-fix.json SDM_CYCLE=17.0`
+   — both invocations verified PASS on 2026-08-03.
 1. **M4.2 Part B hardware rows (B1/B4/B5)** — real Garmin watch → real bridge
    → real treadmill: watch pace tracks belt speed with the treadmill link up
    (footpod pairing proved ANT alone, never concurrently). See
@@ -144,12 +302,15 @@ explained — it never worked, until now.
    DFU Bootloader, `make flash-dfu` reported `Device programmed.`, and the app
    came back up. Exercised twice. This is now the primary flashing route (SWD
    is down); see `docs/flashing.md` §8b.
-4. **Exercise `SDM:TGT` on hardware — nobody has watched a broadcast yet.**
+4. ~~**Exercise `SDM:TGT` on hardware — nobody has watched a broadcast yet.**~~
+   — **DONE 2026-08-01.** `test/23806153959_ACTIVITY.fit` is a full 5-minute
+   SDM:TGT run: the watch paired with the footpod, and pace *and* distance both
+   advanced for the whole run with no treadmill connected (the analyser confirms
+   distance tracked the commanded speed to within 0.1% even across the telemetry
+   holes). What that run also exposed — a 2.26 s response lag and a periodic
+   speed dropout — is item 0 above and `docs/pace-lag-analysis.md`.
    Press button action 4 (label flips `SDM:ACT`→`SDM:TGT`, OLED row 0 shows
-   `A:T`, 2400 Hz chirp on / 700 Hz off), then confirm a paired watch sees the
-   footpod and that pace *and* distance both advance with no treadmill
-   connected. Untestable from the dev machine: the toggle is a physical button
-   and there is no ANT receiver here. Also confirm the bridge no longer grabs
+   `A:T`, 2400 Hz chirp on / 700 Hz off). Also confirm the bridge no longer grabs
    a treadmill on its own while the mode is on (see below).
 
    ~~Auto-connects to a treadmill during standalone testing~~ — **fixed
@@ -191,6 +352,43 @@ concurrency gate remains, per `docs/finishing-plan.md`.
 
 ## Known gaps and non-goals
 
+- ⚠⚠ **The "scan-wedge fix" was attempted 2026-08-03 and REVERTED — it broke the
+  field outright. Do not re-apply it as written.** The *analysis* still looks
+  right: both CIQ projects use `mScanning` (the *observed* radio state, written
+  only from the `onScanStateChange` callback and therefore always one callback
+  behind) as the guard for *intent*, so a `pairDevice()` throw runs
+  `startScan()` while `mScanning` is still `true`, it early-returns, the OFF
+  callback lands, and nothing restarts the scan. **But the attempted fix was
+  worse than the disease.** It split the state into `mScanning` + `mWantScan`,
+  reconciled by calling `setScanState(SCANNING)` *from inside the
+  `onScanStateChange` callback*, plus a 1 Hz `startScan()` backstop from
+  `compute()`. Measured on hardware (build `0803-1918`): the field went from
+  `CONN` + live target pace to **`--` with no pace at all**, and the bridge
+  testboard showed `W:-` — no watch link, no scan, and `compute()` apparently
+  not running either. Reverted in build `0803-1932`, which restores the exact
+  pre-2026-08-03 scan logic.
+
+  **Why it broke: issuing a BLE operation from within a BLE callback.** Connect
+  IQ does not tolerate re-entering the BLE stack from `onScanStateChange`, and
+  the 1 Hz `setScanState` hammering from `compute()` compounds it. Confirmed by
+  elimination: reverting restored the code but *not* the behaviour, and only a
+  watch reboot did — i.e. the bad build had wedged the CIQ BLE stack into a
+  state that survives app reinstall.
+
+  Any future attempt must re-arm the scan from a **deferred** context (a flag
+  set in the callback and consumed by the next `compute()`), never from inside
+  the callback itself; must not call `setScanState` more than once per state
+  transition; and must be verified on hardware by reading the build stamp off
+  the field. Budget a watch reboot between attempts — without one you are
+  measuring the previous attempt's wreckage, which cost most of an evening on
+  2026-08-03.
+
+  **Workaround until then: reboot the watch.** It is the only thing that clears
+  a wedged BLE state, and it fixes the user-visible symptom completely.
+- **`isConnected()` is `mDevice != null`, and `pairDevice()` sets `mDevice`
+  before the link is up** (`CtrlBleDelegate.mc`). The field can therefore
+  display `CONN` while nothing works. Not fixed — but worth knowing when reading
+  the field during a failure: `CONN` is "pairing requested", not "link up".
 - ⚠ **A free run does not move the belt, by design.** `decode_action()` returns
   `ACT_NONE` with no structured speed step, meaning "don't touch the belt". This
   has looked like a bug twice. It isn't. *Starting* the belt *requires* a
@@ -818,3 +1016,73 @@ item 4.
   `halt` / `go` to stop and restart the core (it is `go`, not `resume`).
 - Plain reset does **not** enter DFU on this bootloader — it re-enumerates as the
   app. Entering DFU needs SWD (`make dfu-enter`) or the `DFU` ctrl command.
+
+---
+
+# Historical — session log from 2026-08-01
+
+Pace-lag analysis of the first real SDM:TGT interval run, and the four fixes it
+spawned. The headline numbers and expected post-fix values are in the top
+section and in `docs/pace-lag-analysis.md`; this is the session's own account.
+
+## The tool
+
+`test/pace_lag_report.py` — a self-contained uv script (garmin-fit-sdk only).
+It rebuilds what the bridge *should* have commanded straight from the .FIT's own
+`workout_step_mesgs` + `lap_mesgs`, running a Python mirror of
+`core/workout_ctrl.c decode_action()`, then scores the recorded trace against it.
+
+The calculus is the headline metric. For a pure delay `τ` on a step of size
+`|Δ|`, the area between the curves is exactly `|Δ|·τ`, so
+`effective_lag = ∫|a−c|dt / Σ|Δᵢ|` is a lag in **seconds** that also absorbs
+dropouts and level errors. Both signals are piecewise constant, so the
+integrals are exact sums, not quadrature. The area splits into
+**transient / dropout / steady** buckets that sum back to the total, so a
+regression can be attributed. Two independent estimators cross-check it:
+per-transition edge lag, and the global shift `τ*` that minimises the area.
+
+`make pace-test` is the regression gate (self-test + baseline compare,
+non-zero exit on regression). Verified that it fails when it should by feeding
+it a doctored baseline.
+
+## What the run showed
+
+Every one of the 19 speed changes arrived — nothing lost, nothing stale.
+Mean lag 2.26 s (median 2, max 5). The apparent "drift" in the first rounds is
+phase between the watch's 1 Hz compute and the step boundary, not accumulating
+error.
+
+Caveat: the measured lag never reaches the belt. The ANT hop and the watch's
+1 Hz recording are measurement artefacts — roughly 1 s of the 2.26 s. That's
+why the ANT TX staging path was deliberately left alone: improving it would
+improve a number the belt doesn't see.
+
+The speed drops are **not** the belt slowing, and the file proves it two ways:
+distance kept advancing at exactly the commanded rate through every hole, and
+all five holes land at the same phase of the 17.000 s ANT page cycle (circular
+concentration 0.984; scoring against a deliberately wrong 16 s period drops it
+to 0.263, ruling out a method artefact). Cause: four background slots
+back-to-back = a full second with no page 1, and page 2's status byte (per the
+SDK's own `ant_sdm_page_2.h` header) said use state *inactive* — "this footpod
+is not in use".
+
+## Fixes (all built, none hardware-verified)
+
+1. `DataFieldView.mc` — send from `onWorkoutStepComplete()`; fires at the step
+   boundary instead of the next 1 Hz compute. Change-gated, so it can only help.
+2. `CtrlBleDelegate.mc` — queue a frame that arrives mid-write and flush on
+   completion (was a full-second penalty); also fixes a pre-existing gap where
+   a reconnect left the view believing the bridge still held the last frame.
+3. `core/ant_sdm_encode.c` — page 2 use state `0x00` → `0x01` (active).
+4. `firmware/ant_sdm.c` — spread the background slots across a 64-slot cycle
+   (slots 15/31/47/63) so no one-second window starves page 1.
+
+Green: `make host-test`, `make firmware`, `monkeyc -l 2` (strict),
+`--self-test`, `make pace-test`.
+
+## Left for the user's call
+
+- `test/23806153959_ACTIVITY.fit` stays **untracked** on purpose — it carries
+  HR, timestamps and a device serial, and `make pace-test` depends on it.
+- The predicted post-fix numbers in `docs/pace-lag-analysis.md` §4 are
+  **predictions** until the same workout is re-run on hardware.

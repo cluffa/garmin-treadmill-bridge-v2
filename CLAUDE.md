@@ -6,6 +6,15 @@
 # Host tests (core/ only, no firmware)
 make host-test
 
+# Pace/lag scoring of a recorded SDM:TGT workout (needs uv + a .FIT; NOT part
+# of host-test). See docs/pace-lag-analysis.md.
+make pace-test
+
+# Connect IQ (watch). ciq-build regenerates source/BuildInfo.mc and THEN runs
+# monkeyc -l 2; sideload only ever CONSUMES a build. See watch/README.md.
+make ciq-build
+make sideload
+
 # Firmware (nRF52840 + S340)
 # Build with the top-level convenience target:
 make firmware
@@ -108,6 +117,13 @@ The bridge between them is `core/machine.h` — a unified facade that auto-detec
 `garmin_ctrl_app` (the SCAN/CONNECT picker over `A6ED0002`/`0003`). See
 `watch/README.md`.
 
+`watch/*/source/BuildInfo.mc` is **generated** by `tools/ciq_stamp.sh` (checked
+in, so a fresh clone compiles) and the data field renders it on its bottom row —
+`CONN 0803-1901`. Always stamp before compiling, and **read the stamp off the
+watch before trusting a before/after result**: a sideload that silently did not
+take looks exactly like one that did, and debugging code that was never on the
+device has cost this project a session already.
+
 ⚠ **A free run does not move the belt, by design.** `decode_action()` returns
 `ACT_NONE` when no structured workout step is present, which means "don't touch
 the belt", and `workout_ctrl_tick()` keeps re-asserting the last latched speed.
@@ -119,6 +135,27 @@ The one step that moves the belt without a speed target is a **rest** step
 `REST_SPEED_KMH` (4.0) so intervals walk out the rest instead of holding work
 pace. It is a plain unconditional set, not a floor: keep the free-run and
 active-step paths on `ACT_NONE`, or a free run starts moving the belt.
+
+## Belt response lag
+
+`test/pace_lag_report.py` (`make pace-test`) grades a recorded SDM:TGT workout:
+it rebuilds what `workout_ctrl.c` should have commanded from the .FIT's own
+workout steps and laps, and scores the recorded trace against it — response lag,
+area between the curves, and periodic ANT speed dropouts. It carries a Python
+mirror of `decode_action()` and parses `REST_SPEED_KMH` out of
+`core/workout_ctrl.c` plus `CYCLE_LEN`/`SDM_CHANNEL_PERIOD` out of
+`firmware/ant_sdm.c`, so **changing any of those three changes the scorer's
+model** — that is deliberate, but re-scoring an *older* .FIT then needs the
+recording firmware's values passed explicitly (`--sdm-cycle-s`,
+`--rest-policy`). Findings and the current numbers: `docs/pace-lag-analysis.md`.
+
+The default gate is the **post-fix** trace (`test/23842067586_ACTIVITY.fit`,
+2026-08-03) with `SDM_CYCLE` empty so the cycle is read from `ant_sdm.c`.
+Re-scoring the archived pre-fix trace needs all three overrides together —
+`FIT=`, `BASELINE=`, and `SDM_CYCLE=17.0`; the exact line is in the Makefile
+comment above the vars. Both .FITs are **untracked on purpose** (real
+activities: HR, timestamps, device serial), so `make pace-test` fails on a fresh
+clone until one is supplied.
 
 `make host-test` runs `make check-uuid` first, which asserts firmware, mock, and
 both CIQ projects agree on the 128-bit A6ED base. Keep it that way: the watch
