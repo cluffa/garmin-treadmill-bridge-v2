@@ -27,16 +27,27 @@
  * (manufacturer/product info) are required at least once every 65 messages
  * for the receiver to identify the sensor.
  *
- * Cycle of 68 TX slots:
- *   0..63  page 1 (distance/speed)
- *   64..65 page 2 (cadence/status — cadence invalid, treadmill has no stride)
- *   66     common page 80
- *   67     common page 81
+ * The four background slots are *spread*, never adjacent. They used to sit in
+ * one run at the end of a 68-slot cycle (p2, p2, p80, p81), which at ~4 Hz is a
+ * full second in which the watch receives no page 1 at all — and the watch
+ * records one speed sample per second. That lines up with the ~1 s speed
+ * holes test/pace_lag_report.py found in the 2026-08-01 trace (distance kept
+ * advancing through them, so nothing had actually stopped). Interleaving
+ * guarantees at least three page 1s inside any one-second window.
+ *
+ * Cycle of 64 TX slots (~16 s at 4 Hz), so each common page still repeats
+ * every 64 messages, inside the 65-message requirement:
+ *   15  page 2 (cadence/status — cadence invalid, treadmill has no stride)
+ *   31  common page 80
+ *   47  page 2
+ *   63  common page 81
+ *   all other slots: page 1 (distance/speed)
  */
-#define CYCLE_LEN     68
-#define P2_FIRST      64
-#define P80_SLOT      66
-#define P81_SLOT      67
+#define CYCLE_LEN     64
+#define P2_SLOT_A     15
+#define P80_SLOT      31
+#define P2_SLOT_B     47
+#define P81_SLOT      63
 
 /* Common page 80: HW revision 1, manufacturer 0x00FF (development), model 1.
  * Common page 81: SW revision 1, serial number 0xFFFFFFFF (none). */
@@ -137,7 +148,7 @@ void ant_sdm_on_tx_event(void)
         memcpy(pg, PAGE_80, sizeof(pg));
     } else if (s_slot == P81_SLOT) {
         memcpy(pg, PAGE_81, sizeof(pg));
-    } else if (s_slot >= P2_FIRST) {
+    } else if (s_slot == P2_SLOT_A || s_slot == P2_SLOT_B) {
         ant_sdm_encode_page2(ts, pg);
     } else {
         ant_sdm_encode_page1(ts, pg);

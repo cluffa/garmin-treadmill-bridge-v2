@@ -28,7 +28,14 @@ int main(void) {
     uint8_t p2[8];
     ant_sdm_encode_page2(&b, p2);
     assert(p2[0] == 0x02 && (p2[4] & 0x0F) == 0x03 && p2[5] == 0x80);
-    assert(p2[1] == 0xFF && p2[2] == 0xFF && p2[7] == 0x00);
+    assert(p2[1] == 0xFF && p2[2] == 0xFF);
+    /* status byte: use state must read ACTIVE (bits[1:0] == 1). A 0 here means
+     * "footpod not in use" and the watch records speed 0 whenever it samples a
+     * page 2 — the 0 km/h spikes seen in test/23806153959_ACTIVITY.fit.
+     * health/battery/location all stay 0 (OK / new / laces). */
+    assert(p2[7] == 0x01);
+    assert((p2[7] & 0x03) == 0x01);   /* use state  = active */
+    assert((p2[7] & 0x0C) == 0x00);   /* health     = OK     */
     /* cadence must be the SDM "invalid" encoding (0xFF integer, 0xF fraction),
      * not 0x00 — a zero cadence is a *valid* 0 strides/min and stops the watch
      * from falling back to its own wrist cadence. */

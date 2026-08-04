@@ -39,6 +39,7 @@ class DataFieldView extends WatchUi.DataField {
 
     hidden var mBle as CtrlBleDelegate or Null;
     hidden var mLastFrame as ByteArray or Null; // last frame actually sent
+    hidden var mLinkGen as Number;              // link mLastFrame was sent on
     hidden var mTargetKmh as Float;             // resolved speed target, for display
     hidden var mHasSpeedTarget as Boolean;
     hidden var mTimerState as Number;
@@ -48,6 +49,7 @@ class DataFieldView extends WatchUi.DataField {
         DataField.initialize();
         mBle = ble;
         mLastFrame = null;
+        mLinkGen = -1;
         mTargetKmh = 0.0f;
         mHasSpeedTarget = false;
         mTimerState = Activity.TIMER_STATE_OFF;
@@ -200,12 +202,22 @@ class DataFieldView extends WatchUi.DataField {
     }
 
     // Send the frame if it changed (or force it, for a timer transition). Only
-    // latches it as sent when the write was actually issued.  This is the
-    // single catch boundary for the BLE send path, so the onTimer* force
-    // pushes are protected the same as the 1 Hz compute() sends.
+    // latches it as sent when the write was accepted for delivery.  This is the
+    // single catch boundary for the BLE send path, so the onTimer* and
+    // onWorkoutStepComplete pushes are protected the same as the 1 Hz
+    // compute() sends.
     hidden function _maybeSend(frame as ByteArray, force as Boolean) as Void {
         try {
             if (mBle == null || !mBle.isConnected()) { return; }
+            // mLastFrame means "the bridge already has this" — only true of the
+            // link it was sent on. After a reconnect the bridge is holding
+            // whatever it had before with nothing in flight to correct it, so
+            // drop the latch and let this frame through.
+            var gen = mBle.linkGeneration();
+            if (gen != mLinkGen) {
+                mLastFrame = null;
+                mLinkGen = gen;
+            }
             if (!force && _bytesEqual(frame, mLastFrame)) { return; }
             if (mBle.writeWorkoutFrame(frame)) {
                 mLastFrame = frame;
@@ -226,6 +238,26 @@ class DataFieldView extends WatchUi.DataField {
         mLastInfo = info;
         mTimerState = (info has :timerState) && info.timerState != null
             ? info.timerState : Activity.TIMER_STATE_OFF;
+        _maybeSend(_packFrame(mTimerState), false);
+    }
+
+    // A workout step boundary is the moment the belt speed needs to change, and
+    // waiting for the next compute() to notice is the single largest term in
+    // the end-to-end pace lag: the boundary lands at a uniformly random point
+    // inside the 1 Hz compute period, so it costs ~0.5 s on average and up to a
+    // full second. This callback fires *at* the boundary, so the new target
+    // goes out as soon as the watch itself knows about it. Measured lag before
+    // this existed: 2.26 s mean (test/pace_lag_report.py on the 2026-08-01
+    // trace), of which ~0.5 s is the watch's own 1 Hz recording of the ANT
+    // trace and never reaches the belt.
+    //
+    // Deliberately change-gated (force=false), NOT a _forcePush: if the workout
+    // step machine has not advanced yet when this fires, _packFrame() still
+    // returns the *old* step. Forcing would spend a BLE write re-sending it and
+    // latch it as sent, which the next compute() then has to undo. Gating means
+    // the worst case is silence here and the old 1 Hz behaviour takes over — so
+    // this can only help, never hurt.
+    function onWorkoutStepComplete() as Void {
         _maybeSend(_packFrame(mTimerState), false);
     }
 
@@ -265,7 +297,12 @@ class DataFieldView extends WatchUi.DataField {
         dc.drawText(w / 2, h / 2, Graphics.FONT_XTINY, _timerStr(),
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
 
-        // Bridge link state (bottom): CONN / SCAN / --
+        // Bridge link state + build stamp (bottom): "CONN 0803-1857".
+        // The stamp is here rather than behind a menu because the question it
+        // answers — "is the watch running the build I just sideloaded?" — comes
+        // up mid-run, and a sideload that silently did not take looks exactly
+        // like one that did. It stays visible when connected for the same
+        // reason: a stale build that still connects is the confusing case.
         var link = "--";
         if (mBle != null) {
             if (mBle.isConnected()) {
@@ -274,7 +311,8 @@ class DataFieldView extends WatchUi.DataField {
                 link = "SCAN";
             }
         }
-        dc.drawText(w / 2, h * 3 / 4, Graphics.FONT_XTINY, link,
+        dc.drawText(w / 2, h * 3 / 4, Graphics.FONT_XTINY,
+            link + " " + BuildInfo.STAMP,
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
     }
 }

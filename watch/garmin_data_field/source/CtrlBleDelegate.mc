@@ -17,6 +17,8 @@ class CtrlBleDelegate extends BluetoothLowEnergy.BleDelegate {
     hidden var mProfileRegistered as Boolean;
     hidden var mScanning as Boolean;
     hidden var mWritePending as Boolean;
+    hidden var mQueued as ByteArray or Null;    // frame that arrived mid-write
+    hidden var mLinkGen as Number;              // bumped on every (re)connect
 
     function initialize() {
         BleDelegate.initialize();
@@ -24,6 +26,8 @@ class CtrlBleDelegate extends BluetoothLowEnergy.BleDelegate {
         mProfileRegistered = false;
         mScanning = false;
         mWritePending = false;
+        mQueued = null;
+        mLinkGen = 0;
     }
 
     // Async; results arrive in onProfileRegister. Data fields get a single
@@ -97,6 +101,8 @@ class CtrlBleDelegate extends BluetoothLowEnergy.BleDelegate {
         if (state == BluetoothLowEnergy.CONNECTION_STATE_CONNECTED) {
             mDevice = device;
             mWritePending = false;
+            mQueued = null;
+            mLinkGen++;
             System.println("BLE bridge connected");
         } else {
             System.println("BLE bridge disconnected — rescanning");
@@ -109,6 +115,7 @@ class CtrlBleDelegate extends BluetoothLowEnergy.BleDelegate {
             }
             mDevice = null;
             mWritePending = false;
+            mQueued = null;   // it can never go out on this link now
             startScan();
         }
     }
@@ -133,13 +140,38 @@ class CtrlBleDelegate extends BluetoothLowEnergy.BleDelegate {
         return mScanning;
     }
 
+    // Increments on every (re)connect. The caller latches "the bridge already
+    // has this frame"; that latch is only meaningful for the link the frame
+    // went out on, so a change here tells it to re-send unconditionally.
+    // Without it, a link that drops and comes back leaves the bridge holding
+    // whatever it had before with no frame in flight to correct it — nothing
+    // re-sends until the workout step next changes.
+    function linkGeneration() as Number {
+        return mLinkGen;
+    }
+
     // Write a raw workout-telemetry frame to the bridge. One write in flight at
-    // a time; drops the request if the previous write hasn't completed (the
-    // caller re-sends on change from compute() anyway). Returns true only when
-    // the write was actually issued, so the caller can hold off latching the
-    // frame as "sent" until it succeeds.
+    // a time. A frame that arrives while a write is outstanding is *queued*
+    // rather than dropped, and goes out from onCharacteristicWrite the instant
+    // the link frees up — the caller's next chance would otherwise be its 1 Hz
+    // compute(), which put a whole extra second of lag on the belt every time
+    // a step boundary landed near an in-flight write.
+    //
+    // Only the newest frame is kept: an older one is by definition superseded,
+    // and the bridge only cares about the current target.
+    //
+    // Returns true when the frame is accepted for delivery (issued or queued),
+    // which is what the caller latches on.
     function writeWorkoutFrame(frame as ByteArray) as Boolean {
-        if (mDevice == null || mWritePending) { return false; }
+        if (mDevice == null) { return false; }
+        if (mWritePending) {
+            mQueued = frame;
+            return true;
+        }
+        return _issue(frame);
+    }
+
+    hidden function _issue(frame as ByteArray) as Boolean {
         try {
             var svc = mDevice.getService(CTRL_SVC_UUID);
             if (svc == null) { return false; }
@@ -160,6 +192,14 @@ class CtrlBleDelegate extends BluetoothLowEnergy.BleDelegate {
         mWritePending = false;
         if (status != BluetoothLowEnergy.STATUS_SUCCESS) {
             System.println("BLE write status=" + status);
+        }
+        // Flush whatever piled up behind this write. Clear the slot first, so a
+        // failure here cannot leave a frame stuck in the queue forever; the
+        // 1 Hz compute() re-send remains the backstop.
+        var pending = mQueued;
+        mQueued = null;
+        if (pending != null && mDevice != null) {
+            _issue(pending);
         }
     }
 }

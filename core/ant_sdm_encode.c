@@ -32,6 +32,20 @@ void ant_sdm_encode_page1(const treadmill_state_t *s, uint8_t out[8]) {
     out[7] = 0x00;                              /* update latency */
 }
 
+/* Page 2 status byte (SDM profile, byte 7). Two bits each, LSB first:
+ *   [1:0] use state   0 = inactive, 1 = ACTIVE
+ *   [3:2] health      0 = OK
+ *   [5:4] battery     0 = new
+ *   [7:6] location    0 = laces
+ * Use state must be 1. A zero says "this footpod is not in use", and a watch
+ * that samples page 2 in that state records the speed as 0 — which is exactly
+ * the isolated 0 km/h spikes test/pace_lag_report.py found in the 2026-08-01
+ * trace, with the distance field advancing straight through them, proving the
+ * belt never slowed. The SDK spells the enum out in
+ * components/ant/ant_profiles/ant_sdm/pages/ant_sdm_page_2.h
+ * (ANT_SDM_USE_STATE_ACTIVE = 0x01). */
+#define SDM_STATUS_ACTIVE  0x01
+
 /* Cadence is broadcast as the SDM "invalid" encoding — 0xFF integer byte,
  * 0xF fraction nibble — NOT 0x00. A treadmill has no stride sensor, and a
  * zero here is a *valid* reading of 0 strides/min: the watch believes the
@@ -45,5 +59,5 @@ void ant_sdm_encode_page2(const treadmill_state_t *s, uint8_t out[8]) {
     out[4] = (uint8_t)(0xF0 | speed_int(s->speed_mps)); /* cad frac | speed int */
     out[5] = speed_frac(s->speed_mps);          /* speed, 1/256 m/s */
     out[6] = 0x00;                              /* reserved */
-    out[7] = 0x00;                              /* status: OK / active */
+    out[7] = SDM_STATUS_ACTIVE;                 /* use state active, health OK */
 }
