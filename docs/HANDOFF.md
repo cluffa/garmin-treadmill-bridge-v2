@@ -173,7 +173,7 @@ and distinguishes the three remaining candidates (profile registration failing,
 | `test/host` | 10 suites | `ftms_parse` `ftms_devlist` `ifit_parse` `ctrl_dispatch` `ant_sdm_encode` `ifit_fsm` `connect_policy` `connect_backoff` `ctrl_frames` `workout_ctrl` |
 | `test/mock` | 4 suites | `test_workout_probe` `test_wkt_decode` `test_link_state` `test_script_header` |
 
-`make firmware` links clean (102424 text / 844 data / 16016 bss).
+`make firmware` links clean (102920 text / 844 data / 16840 bss).
 
 `make pace-test` is a **separate** gate (not part of `make host-test` — it needs
 `uv` and a recorded .FIT). It runs the scorer's own self-test against synthetic
@@ -184,8 +184,8 @@ signals with known answers, then grades `test/23806153959_ACTIVITY.fit` against
 recorded activity (heart rate, timestamps, device serial). `make pace-test`
 needs it; decide whether to commit it before publishing anything.
 
-**Currently flashed: `4932511` + the uncommitted working tree** (`TESTBOARD=1`),
-pushed over USB-DFU on **2026-08-03 19:2x** — so it includes the spread ANT
+**Currently flashed: the 2026-08-03 tree** (`TESTBOARD=1`) — per-address
+connect backoff and the CDC console FIFO — pushed over USB-DFU on **2026-08-03** — so it includes the spread ANT
 background pages and the page-2 use-state fix. Route: `make usb-kick`, then
 `DFU` on the console (SWD is still down), then
 `make flash-dfu SERIAL=/dev/cu.usbmodemC1B06A58A6371`; `nrfutil` reported
@@ -404,12 +404,39 @@ concurrency gate remains, per `docs/finishing-plan.md`.
   exonerated before this was written. It is a fix on its own merits, and the
   loop it prevents is still worth preventing.
 
-- **The console truncates the backoff log line.** It prints `attempt 2 never
-  became usable — not au` and stops, cutting the cooldown value, so the
-  escalation can only be read from the attempt count and not from the ms. The
-  count is enough to diagnose, but the truncation is real and worth fixing in
-  `usb_cdc_log_write()` — NRF_LOG lines longer than the CDC buffer are cut
-  rather than split.
+- ~~**The console truncates anything over one endpoint packet.**~~ — **FIXED
+  and verified on hardware 2026-08-03.** `app_usbd_cdc_acm_write()` permits
+  exactly one transfer in flight and returns `NRF_ERROR_BUSY` otherwise, but
+  `cdc_tx_raw()` called it for every chunk immediately and dropped whatever it
+  refused — nothing ever re-submitted on TX_DONE. What looked like a "ring" was
+  a buffer pool with no queue. NRF_LOG's serial backend emits a long line as
+  several 64-byte chunks, so everything past the first was lost, and
+  `usb_cdc_log_write()` separately hard-capped ctrl replies at 62 bytes.
+
+  Two symptoms that looked unrelated, one cause:
+
+  ```
+  central: attempt 2 never became usable — not au       <- cut at exactly 64
+  {"cmd":"list","devices":[{"idx":0,"name":"I_TL"       <- cut at 62
+  ```
+
+  Replaced with a 1 KB byte FIFO plus a single staging buffer for the one
+  permitted in-flight transfer; TX_DONE pumps the next packet. Verified after
+  flashing:
+
+  ```
+  {"cmd":"list","devices":[{"idx":0,"name":"BadTmill","proto":"FTMS","rssi":-46},{"idx":1,"name":"","proto":"iFit","rssi":-79}]}
+  central: attempt 1 never became usable — not auto-retrying for 1000 ms
+  central: attempt 2 never became usable — not auto-retrying for 2000 ms
+  central: attempt 3 never became usable — not auto-retrying for 4000 ms
+  ```
+
+  That 125-byte LIST is worth noting on its own: device indices were previously
+  unreadable past the first entry, so picking a target for `CONNECT <n>` meant
+  guessing. Cost: +496 text, +824 bss.
+
+  ⚠ `s_cdc_tx_drops` counts dropped bytes but nothing reads it — there is no way
+  to see whether the console is losing output. Worth surfacing in `STATUS`.
 
 - ⚠⚠ **The "scan-wedge fix" was attempted 2026-08-03 and REVERTED — it broke the
   field outright. Do not re-apply it as written.** The *analysis* still looks

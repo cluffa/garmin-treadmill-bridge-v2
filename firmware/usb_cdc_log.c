@@ -59,25 +59,46 @@ static char s_rx_buf[CDC_READ_SIZE];
  * caller's buffer and queues it for asynchronous EasyDMA.  The buffer MUST
  * outlive the call.  A stack buffer is UB and silently corrupts USB output.
  *
- * usb_cdc_log_write() is called from both IRQ (app_timer -> heartbeat_cb) and
- * thread (cdc_tx_sink) context, so the two can preempt each other.  A single
- * static buffer is therefore not enough either — the IRQ path could overwrite
- * it while a thread-mode transfer is still in flight.
+ * It also allows exactly ONE transfer in flight: while the previous one is
+ * still running it returns NRF_ERROR_BUSY.
  *
- * Solution: a small static ring of endpoint-sized buffers.  The write side
- * claims a free slot under critical-section protection (soft-irq-safe);
- * APP_USBD_CDC_ACM_USER_EVT_TX_DONE releases it.  If no slot is free the
- * message is dropped (with a diagnostic counter) — blocking in IRQ context
- * would stall the SoftDevice event dispatch.
+ * That second point broke everything longer than one endpoint packet. This used
+ * to be a pool of endpoint-sized buffers, and it called write() for each chunk
+ * *immediately* — so the first chunk went out and every later one was rejected
+ * with BUSY and dropped, because nothing ever re-submitted on TX_DONE. It was a
+ * buffer pool wearing the word "ring"; there was no queue. NRF_LOG's serial
+ * backend emits a long line as several 64-byte chunks, so anything over 64
+ * bytes lost its tail:
+ *
+ *   "central: attempt 2 never became usable — not au"   <- cut at exactly 64
+ *   {"cmd":"list","devices":[{"idx":0,"name":"I_TL"     <- LIST cut mid-JSON
+ *
+ * Both were this, and both looked like unrelated formatting bugs.
+ *
+ * So: a byte FIFO plus a single staging buffer for the one permitted in-flight
+ * transfer. Writers append; the pump submits one packet; TX_DONE submits the
+ * next. Ordering is preserved, length is unbounded, and the staging buffer is
+ * static so EasyDMA is safe even when the caller passed a stack string.
+ *
+ * usb_cdc_log_write() is called from both IRQ (app_timer -> heartbeat_cb) and
+ * thread (cdc_tx_sink) context, so every FIFO access is inside a critical
+ * region. A whole line is appended under one region so two writers cannot
+ * interleave halves of their messages. When the FIFO is full the excess is
+ * dropped (with a diagnostic counter) — blocking in IRQ context would stall the
+ * SoftDevice event dispatch.
  */
 
-#define CDC_TX_RING_SIZE 4  /* power of two; 4 * 64 = 256 B */
+#define CDC_TX_FIFO_SIZE 1024u  /* power of two */
 
-static char      s_cdc_tx_ring[CDC_TX_RING_SIZE][NRF_DRV_USBD_EPSIZE];
-static volatile uint8_t  s_cdc_tx_wr;   /* next slot to claim              */
-static volatile uint8_t  s_cdc_tx_rd;   /* next slot TX_DONE will release  */
-static volatile uint8_t  s_cdc_tx_cnt;  /* outstanding transfers (0..N)    */
-static volatile uint32_t s_cdc_tx_drops;/* diagnostic: messages dropped    */
+static uint8_t  s_tx_fifo[CDC_TX_FIFO_SIZE];
+static volatile uint16_t s_tx_head;     /* append position                  */
+static volatile uint16_t s_tx_tail;     /* drain position                   */
+static volatile bool     s_tx_busy;     /* a transfer is in flight          */
+static volatile uint32_t s_cdc_tx_drops;/* diagnostic: bytes dropped        */
+
+/* The single in-flight transfer's buffer. Only the pump touches it, and only
+ * when s_tx_busy is false, so it cannot be rewritten under EasyDMA. */
+static uint8_t s_tx_dma[NRF_DRV_USBD_EPSIZE];
 
 /* ---- Forward declarations ------------------------------------------------- */
 
@@ -99,41 +120,56 @@ APP_USBD_CDC_ACM_GLOBAL_DEF(m_cdc_acm,
 
 /* ---- TX ring helper (shared by usb_cdc_log_write + log backend) ----------- */
 
+/* Append to the FIFO. Caller MUST hold a critical region, so that all the
+ * pieces of one logical line land contiguously. */
+static void fifo_push(const uint8_t *data, size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        uint16_t next = (uint16_t)((s_tx_head + 1u) & (CDC_TX_FIFO_SIZE - 1u));
+        if (next == s_tx_tail) {        /* full — drop the rest */
+            s_cdc_tx_drops += (uint32_t)(len - i);
+            return;
+        }
+        s_tx_fifo[s_tx_head] = data[i];
+        s_tx_head = next;
+    }
+}
+
+/* Submit one packet if the endpoint is idle and there is anything to send.
+ * Safe to call from anywhere; a no-op while a transfer is in flight, because
+ * TX_DONE will call it again. */
+static void cdc_tx_pump(void)
+{
+    CRITICAL_REGION_ENTER();
+    if (!s_tx_busy) {
+        size_t n = 0;
+        while (n < sizeof(s_tx_dma) && s_tx_tail != s_tx_head) {
+            s_tx_dma[n++] = s_tx_fifo[s_tx_tail];
+            s_tx_tail = (uint16_t)((s_tx_tail + 1u) & (CDC_TX_FIFO_SIZE - 1u));
+        }
+        if (n > 0) {
+            s_tx_busy = true;
+            if (app_usbd_cdc_acm_write(&m_cdc_acm, s_tx_dma, n) != NRF_SUCCESS) {
+                /* Port not open, or the stack refused it. The bytes are gone —
+                 * deliberately not pushed back, so a console nobody is reading
+                 * drains instead of wedging every later message behind it. */
+                s_tx_busy = false;
+                s_cdc_tx_drops += (uint32_t)n;
+            }
+        }
+    }
+    CRITICAL_REGION_EXIT();
+}
+
 static void cdc_tx_raw(const uint8_t *data, size_t len)
 {
     if (len == 0) return;
 
-    /* One endpoint packet max — longer messages truncate. */
-    if (len > NRF_DRV_USBD_EPSIZE) {
-        len = NRF_DRV_USBD_EPSIZE;
-    }
-
-    /*
-     * Claim a ring slot, copy the payload, and queue the transfer.
-     *
-     * The whole sequence is inside the critical region: if another writer
-     * slipped in between a failed write and the un-claim rollback, we would
-     * rewind over its slot — exactly the corruption this ring prevents.
-     */
     CRITICAL_REGION_ENTER();
-    if (s_cdc_tx_cnt >= CDC_TX_RING_SIZE) {
-        s_cdc_tx_drops++;
-    } else {
-        uint8_t slot = s_cdc_tx_wr;
-        char   *buf  = s_cdc_tx_ring[slot];
-
-        memcpy(buf, data, len);
-
-        s_cdc_tx_wr = (uint8_t)((s_cdc_tx_wr + 1) % CDC_TX_RING_SIZE);
-        s_cdc_tx_cnt++;
-
-        if (app_usbd_cdc_acm_write(&m_cdc_acm, buf, len) != NRF_SUCCESS) {
-            s_cdc_tx_wr = slot;
-            s_cdc_tx_cnt--;
-            s_cdc_tx_drops++;
-        }
-    }
+    fifo_push(data, len);
     CRITICAL_REGION_EXIT();
+
+    cdc_tx_pump();
 }
 
 /* ---- NRF_LOG backend over CDC ACM ---------------------------------------- */
@@ -256,11 +292,11 @@ static void cdc_acm_user_ev_handler(app_usbd_class_inst_t const *p_inst,
     case APP_USBD_CDC_ACM_USER_EVT_PORT_OPEN:
         NRF_LOG_INFO("CDC ACM port opened");
 
-        /* Reset the TX ring — any outstanding transfers are stale. */
+        /* Reset the TX FIFO — any outstanding transfer is stale. */
         CRITICAL_REGION_ENTER();
-        s_cdc_tx_wr   = 0;
-        s_cdc_tx_rd   = 0;
-        s_cdc_tx_cnt  = 0;
+        s_tx_head      = 0;
+        s_tx_tail      = 0;
+        s_tx_busy      = false;
         s_cdc_tx_drops = 0;
         CRITICAL_REGION_EXIT();
 
@@ -276,15 +312,13 @@ static void cdc_acm_user_ev_handler(app_usbd_class_inst_t const *p_inst,
         break;
 
     case APP_USBD_CDC_ACM_USER_EVT_TX_DONE:
-        /* Release the oldest outstanding TX buffer back to the ring.
-         * Transfers complete in FIFO order on a single IN endpoint so
-         * simply advancing s_cdc_tx_rd is correct. */
+        /* The endpoint is free again — send the next packet. This is what makes
+         * a message longer than 64 bytes arrive whole; without it every chunk
+         * after the first hit NRF_ERROR_BUSY and was dropped. */
         CRITICAL_REGION_ENTER();
-        if (s_cdc_tx_cnt > 0) {
-            s_cdc_tx_cnt--;
-            s_cdc_tx_rd = (uint8_t)(s_cdc_tx_rd + 1) % CDC_TX_RING_SIZE;
-        }
+        s_tx_busy = false;
         CRITICAL_REGION_EXIT();
+        cdc_tx_pump();
         break;
 
     case APP_USBD_CDC_ACM_USER_EVT_RX_DONE: {
@@ -384,23 +418,23 @@ void usb_cdc_log_write(const char *msg)
     size_t len = strlen(msg);
     if (len == 0) return;
 
-    /* Truncate to what fits in one endpoint packet (minus CR+LF). */
-    if (len > NRF_DRV_USBD_EPSIZE - 2) {
-        len = NRF_DRV_USBD_EPSIZE - 2;
-    }
-
     /*
-     * Build the CR+LF-terminated payload on the stack, then push it
-     * through cdc_tx_raw().  The double-copy is intentional — the ring
-     * buffer must own every buffer passed to app_usbd_cdc_acm_write()
-     * (EasyDMA), and stack buffers are UB there.
+     * No length cap. This used to truncate to one endpoint packet minus CR+LF,
+     * which silently cut every ctrl reply at 62 bytes — a LIST reply stopped
+     * mid-JSON, which read as a malformed-frame bug rather than a transport
+     * one. The FIFO handles any length now; only a genuinely full FIFO drops.
+     *
+     * Body and terminator go in under one critical region so another writer
+     * (an IRQ-context log) cannot land between a line and its CR+LF. Passing
+     * `msg` straight to fifo_push is safe even for a stack string: the FIFO
+     * copies, and the only buffer EasyDMA ever sees is the static staging one.
      */
-    char buf[NRF_DRV_USBD_EPSIZE];
-    memcpy(buf, msg, len);
-    buf[len]     = '\r';
-    buf[len + 1] = '\n';
+    CRITICAL_REGION_ENTER();
+    fifo_push((const uint8_t *)msg, len);
+    fifo_push((const uint8_t *)"\r\n", 2);
+    CRITICAL_REGION_EXIT();
 
-    cdc_tx_raw((const uint8_t *)buf, len + 2);
+    cdc_tx_pump();
 }
 
 /* ---- Weak hook (overridable by application) ------------------------------- */
