@@ -352,8 +352,8 @@ concurrency gate remains, per `docs/finishing-plan.md`.
 
 ## Known gaps and non-goals
 
-- **Failed-attempt backoff is now per-address — FIXED 2026-08-03, built but not
-  yet exercised on hardware.** It tracked a single address, so it did nothing
+- **Failed-attempt backoff is now per-address — FIXED and VERIFIED ON HARDWARE
+  2026-08-03.** It tracked a single address, so it did nothing
   whenever more than one machine was misbehaving: `attempt_failed()` overwrote
   the slot on every *different* address, destroying the previous one's history,
   and `backoff_blocks()` only matched the one address it happened to hold. With
@@ -377,9 +377,39 @@ concurrency gate remains, per `docs/finishing-plan.md`.
   since the 24-bit counter wraps every ~512 s and cannot be passed as a
   timestamp.
 
+  **Hardware verification (2026-08-03), using `test/mock/mock_bad_treadmill.py`**
+  — a peripheral that advertises FTMS 0x1826 with the control point but *no*
+  0x2ACD, so the bridge connects and then fails discovery. That reproduces the
+  case the backoff exists for, which real gear will not do on demand. Observed
+  on the console with the mock and the real `I_TL` both in range:
+
+  ```
+  connected "BadTmill" (FTMS) -> service not found (0x010A) -> attempt 1
+  connecting to "I_TL"        -> disconnected (0x3E)        -> attempt 1
+  connected "BadTmill" (FTMS) -> service not found (0x010A) -> attempt 2   <-- the proof
+  ```
+
+  The third line is the whole test. BadTmill escalated to **attempt 2 with a
+  different address's failure in between** — under the single-slot code I_TL's
+  failure overwrote the slot and BadTmill would have restarted at "attempt 1".
+  Both failure paths are covered: GATT discovery failure (BadTmill, 0x010A) and
+  HCI 0x3E establishment failure (I_TL). Reset-on-success was also observed —
+  I_TL dropped back to "attempt 1" after a run that reached DISC_DONE.
+
+  Note the manual `CONNECT <n>` path bypasses the suppression check by design,
+  which is what makes it usable as a test lever: it forces repeated attempts so
+  the counter can be watched escalating.
+
   ⚠ This was **not** the cause of the watch-connect failure — the bridge was
   exonerated before this was written. It is a fix on its own merits, and the
   loop it prevents is still worth preventing.
+
+- **The console truncates the backoff log line.** It prints `attempt 2 never
+  became usable — not au` and stops, cutting the cooldown value, so the
+  escalation can only be read from the attempt count and not from the ms. The
+  count is enough to diagnose, but the truncation is real and worth fixing in
+  `usb_cdc_log_write()` — NRF_LOG lines longer than the CDC buffer are cut
+  rather than split.
 
 - ⚠⚠ **The "scan-wedge fix" was attempted 2026-08-03 and REVERTED — it broke the
   field outright. Do not re-apply it as written.** The *analysis* still looks
