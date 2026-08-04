@@ -437,6 +437,22 @@ void usb_cdc_log_write(const char *msg)
     cdc_tx_pump();
 }
 
+uint32_t usb_cdc_log_drops(void)
+{
+    uint32_t n;
+    CRITICAL_REGION_ENTER();
+    n = s_cdc_tx_drops;
+    CRITICAL_REGION_EXIT();
+    return n;
+}
+
+/* Strong override of core's weak ctrl_console_drops(), so STATUS reports it.
+ * Kept here rather than in a glue file because this module owns the counter. */
+uint32_t ctrl_console_drops(void)
+{
+    return usb_cdc_log_drops();
+}
+
 /* ---- Weak hook (overridable by application) ------------------------------- */
 
 __attribute__((weak))

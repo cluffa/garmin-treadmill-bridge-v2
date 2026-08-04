@@ -173,7 +173,7 @@ and distinguishes the three remaining candidates (profile registration failing,
 | `test/host` | 10 suites | `ftms_parse` `ftms_devlist` `ifit_parse` `ctrl_dispatch` `ant_sdm_encode` `ifit_fsm` `connect_policy` `connect_backoff` `ctrl_frames` `workout_ctrl` |
 | `test/mock` | 4 suites | `test_workout_probe` `test_wkt_decode` `test_link_state` `test_script_header` |
 
-`make firmware` links clean (102920 text / 844 data / 16840 bss).
+`make firmware` links clean (103000 text / 844 data / 16840 bss).
 
 `make pace-test` is a **separate** gate (not part of `make host-test` — it needs
 `uv` and a recorded .FIT). It runs the scorer's own self-test against synthetic
@@ -435,8 +435,13 @@ concurrency gate remains, per `docs/finishing-plan.md`.
   unreadable past the first entry, so picking a target for `CONNECT <n>` meant
   guessing. Cost: +496 text, +824 bss.
 
-  ⚠ `s_cdc_tx_drops` counts dropped bytes but nothing reads it — there is no way
-  to see whether the console is losing output. Worth surfacing in `STATUS`.
+  `STATUS` now reports the drop counter as `tx_drops`, so a lossy console is
+  visible rather than silent — a missing log line otherwise reads as "that code
+  path did not run". It is exposed through a weak `ctrl_console_drops()` in
+  `core/ctrl_dispatch.h` that `firmware/usb_cdc_log.c` overrides; core stays
+  pure and the host build links the 0 default. Deliberately *not* on
+  `machine.h`, which is the treadmill facade. Note `PORT_OPEN` resets the
+  counter, so it measures the current console session only.
 
 - ⚠⚠ **The "scan-wedge fix" was attempted 2026-08-03 and REVERTED — it broke the
   field outright. Do not re-apply it as written.** The *analysis* still looks

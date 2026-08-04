@@ -115,19 +115,32 @@ static void cmd_dfu(ctrl_tx_fn tx, void *ctx)
     machine_reboot_to_dfu();
 }
 
+/* Platforms without a lossy console link get 0 — see ctrl_dispatch.h. */
+__attribute__((weak)) uint32_t ctrl_console_drops(void)
+{
+    return 0;
+}
+
 static void cmd_status(ctrl_tx_fn tx, void *ctx)
 {
     bool conn = machine_connected();
     const ftms_device_t *dev = machine_connected_device();
+    /* Reported unconditionally, including when no treadmill is connected: it
+     * describes the console, not the belt, and a truncated STATUS is exactly
+     * the case you need it for. */
+    unsigned long drops = (unsigned long)ctrl_console_drops();
     char buf[256];
     if (!conn || !dev) {
-        snprintf(buf, sizeof buf, "{\"cmd\":\"status\",\"connected\":false}");
+        snprintf(buf, sizeof buf,
+                 "{\"cmd\":\"status\",\"connected\":false,\"tx_drops\":%lu}",
+                 drops);
     } else {
         char name[FTMS_NAME_LEN * 2];
         json_escape(name, sizeof name, dev->name);
         snprintf(buf, sizeof buf,
-                 "{\"cmd\":\"status\",\"connected\":true,\"name\":\"%s\"}",
-                 name);
+                 "{\"cmd\":\"status\",\"connected\":true,\"name\":\"%s\","
+                 "\"tx_drops\":%lu}",
+                 name, drops);
     }
     tx(buf, ctx);
 }
