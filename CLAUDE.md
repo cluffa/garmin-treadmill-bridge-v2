@@ -99,6 +99,16 @@ simultaneous FTMS+iFit connections.
 - Device type 124 (Stride SDM).
 - Network key in git-ignored `ant_network_key.h` (placeholder builds; real key from thisisant.com).
 - ANT eval license key passed by Makefile.
+- The footpod keeps **its own clock**, integrated from the app_timer RTC in
+  `firmware/ant_sdm.c` — never `treadmill.elapsed_s`, which is 0 on iFit and on
+  any FTMS treadmill that omits flag bit 10. Page 1's fractional time byte is
+  part of that: at ~4 Hz a whole-second clock repeats across three of every four
+  pages, so a receiver differentiating against it divides by zero.
+- ⚠ **The bridge cannot measure cadence and must not invent one.** It has no
+  stride sensor; the watch's wrist cadence is correct and is what should end up
+  in the recording. Today the watch still sources cadence from us and records a
+  flat 0 — the open problem, with the evidence, is
+  `docs/sdm-recording-analysis.md`.
 
 ## Secrets (never committed)
 

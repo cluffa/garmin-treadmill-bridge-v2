@@ -56,6 +56,36 @@ static const uint8_t PAGE_81[8] = {0x51,0xFF,0xFF,0x01,0xFF,0xFF,0xFF,0xFF};
 
 static uint8_t s_slot;    /* position in the CYCLE_LEN pattern */
 
+/* ---- The footpod's own clock -------------------------------------------------
+ *
+ * A footpod times itself. This clock is integrated from the app_timer RTC
+ * (32768 Hz) on every TX event and is what page 1's time field carries, in
+ * *both* broadcast modes.
+ *
+ * It used to come from treadmill.elapsed_s, which is not a footpod clock at
+ * all: ble_central.c's iFit path assigns it a literal 0 on every notification
+ * (iFit frames carry no elapsed time), and core/ftms_parse.c fills it only
+ * when the treadmill sets Treadmill Data flag bit 10, memset-ing it to 0
+ * otherwise. So on an iFit treadmill the footpod broadcast a frozen clock for
+ * the whole run while its distance field advanced normally — a sensor whose
+ * odometer moves against a stopped clock. Observed in
+ * 23856353712_ACTIVITY.fit (2026-08-05): every lap recorded total_distance 0
+ * and no avg_speed at all, and the session cadence/running-dynamics
+ * accumulators came out as garbage (avg_running_cadence 246 strides/min with
+ * max_running_cadence 0). See docs/sdm-recording-analysis.md.
+ *
+ * Wrapped at 256 s because that is where the wire field rolls anyway (the
+ * receiver reassembles it), and holding the accumulator small keeps float32
+ * resolution constant instead of degrading over a multi-hour session.
+ *
+ * Integrating on every TX event (~4 Hz) rather than per page-1 slot keeps the
+ * trace smooth, and the RTC keeps running when the belt state goes quiet. */
+#define SDM_TIME_ROLL_S  256.0f
+
+static float    s_elapsed_s  = 0.0f;   /* footpod clock, s, wrapped at 256 */
+static uint32_t s_prev_tick  = 0;      /* app_timer ticks at the last encode */
+static bool     s_clock_run  = false;  /* s_prev_tick is valid */
+
 /* ---- Target-broadcast debug mode --------------------------------------------
  *
  * When app_state()->sdm_broadcast_target is set (testboard button action
@@ -65,21 +95,13 @@ static uint8_t s_slot;    /* position in the CYCLE_LEN pattern */
  * bridge commanded: run the same workout in normal mode for the actual
  * belt trace and diff the two .fit files to score belt accuracy.
  *
- * Both the elapsed time and the distance this mode broadcasts are integrated
- * from the app_timer RTC (32768 Hz), NOT from treadmill.elapsed_s — that field
- * is filled in only by FTMS treadmill-data notifications (core/ftms_parse.c)
- * and is zeroed on disconnect (ble_central.c), so keying off it pinned both
- * the time and distance fields at 0 whenever no treadmill was connected, which
- * is precisely the case this mode exists to serve. The target speed itself
- * does latch with no treadmill: machine_set_speed() writes
- * resolved_target_mps unconditionally, before its connection check.
- *
- * Integrating on every TX event (~4 Hz) rather than per page-1 slot also keeps
- * the trace smooth, and the RTC keeps running when the belt state goes quiet. */
+ * Only the *distance* is special-cased here now — the clock above is shared,
+ * so this mode works with no treadmill connected for the same reason it
+ * always did. The target speed itself latches with no treadmill:
+ * machine_set_speed() writes resolved_target_mps unconditionally, before its
+ * connection check. */
 static float    s_tgt_dist_m    = 0.0f;   /* target-integrated distance, m */
-static float    s_tgt_elapsed_s = 0.0f;   /* target-integrated elapsed time, s */
 static bool     s_tgt_seeded    = false;  /* seeded from actual state on entry */
-static uint32_t s_tgt_prev_tick = 0;      /* app_timer ticks at the last encode */
 
 /* ---- ANT event observer callback ------------------------------------------- */
 static void ant_evt_handler(ant_evt_t *p_evt, void *p_context)
@@ -102,47 +124,57 @@ void ant_sdm_on_tx_event(void)
     uint8_t pg[8];
     app_state_t *st = app_state();
 
-    /* Target-broadcast debug mode: override the belt state with the
-     * commanded target. Applies to every page (1 and 2 both carry speed). */
-    treadmill_state_t ts_target;
-    const treadmill_state_t *ts = &st->treadmill;
-    if (st->sdm_broadcast_target) {
-        ts_target = *ts;
-        ts_target.speed_mps = st->resolved_target_mps;
-
-        uint32_t now_tick = app_timer_cnt_get();
-        if (!s_tgt_seeded) {
-            /* Start where the actual belt is so toggling mid-run does not
-             * jump the trace; with no treadmill both of these are 0. */
-            s_tgt_dist_m    = ts_target.distance_m;
-            s_tgt_elapsed_s = (float)ts_target.elapsed_s;
-            s_tgt_prev_tick = now_tick;
-            s_tgt_seeded    = true;
-        }
-
-        /* app_timer_cnt_diff_compute() handles the RTC's 24-bit wrap (every
-         * ~512 s at 32768 Hz), which a plain subtraction would not. */
-        uint32_t d_ticks = app_timer_cnt_diff_compute(now_tick, s_tgt_prev_tick);
-        s_tgt_prev_tick  = now_tick;
-
+    /* Advance the footpod clock first — it runs in both modes, and with no
+     * treadmill connected, because that is what a footpod does.
+     *
+     * app_timer_cnt_diff_compute() handles the RTC's 24-bit wrap (every
+     * ~512 s at 32768 Hz), which a plain subtraction would not. The first
+     * event after start has no predecessor to difference against, so it
+     * contributes no time rather than a garbage delta. */
+    uint32_t now_tick = app_timer_cnt_get();
+    float dt = 0.0f;
+    if (s_clock_run) {
+        uint32_t d_ticks = app_timer_cnt_diff_compute(now_tick, s_prev_tick);
         /* Effective tick rate, matching the SDK's own APP_TIMER_TICKS(): the
          * raw RTC clock divided by the configured prescaler. Spelling it out
          * keeps this correct if APP_TIMER_CONFIG_RTC_FREQUENCY ever moves off
          * 0 (app_config.h), which a bare APP_TIMER_CLOCK_FREQ would not. */
-        float dt = (float)d_ticks /
-                   ((float)APP_TIMER_CLOCK_FREQ /
-                    (float)(APP_TIMER_CONFIG_RTC_FREQUENCY + 1));
-        s_tgt_elapsed_s += dt;
-        s_tgt_dist_m    += ts_target.speed_mps * dt;
+        dt = (float)d_ticks /
+             ((float)APP_TIMER_CLOCK_FREQ /
+              (float)(APP_TIMER_CONFIG_RTC_FREQUENCY + 1));
+    }
+    s_prev_tick = now_tick;
+    s_clock_run = true;
 
-        ts_target.elapsed_s  = (uint32_t)s_tgt_elapsed_s;
-        ts_target.distance_m = s_tgt_dist_m;
-        ts = &ts_target;
+    s_elapsed_s += dt;
+    while (s_elapsed_s >= SDM_TIME_ROLL_S) {
+        s_elapsed_s -= SDM_TIME_ROLL_S;
+    }
+
+    /* Every broadcast carries the footpod's clock, never the treadmill's. */
+    treadmill_state_t ts_bcast = st->treadmill;
+    ts_bcast.elapsed_s = s_elapsed_s;
+
+    /* Target-broadcast debug mode: override the belt state with the
+     * commanded target. Applies to every page (1 and 2 both carry speed). */
+    if (st->sdm_broadcast_target) {
+        ts_bcast.speed_mps = st->resolved_target_mps;
+
+        if (!s_tgt_seeded) {
+            /* Start where the actual belt is so toggling mid-run does not
+             * jump the trace; with no treadmill this is 0. */
+            s_tgt_dist_m = ts_bcast.distance_m;
+            s_tgt_seeded = true;
+        }
+        s_tgt_dist_m += ts_bcast.speed_mps * dt;
+        ts_bcast.distance_m = s_tgt_dist_m;
     } else {
         /* Re-seed from the actual belt state next time target mode is
          * enabled, so the trace picks up from where the belt actually is. */
         s_tgt_seeded = false;
     }
+
+    const treadmill_state_t *ts = &ts_bcast;
 
     if (s_slot == P80_SLOT) {
         memcpy(pg, PAGE_80, sizeof(pg));
@@ -186,6 +218,13 @@ void ant_sdm_init(void)
 void ant_sdm_start(void)
 {
     s_slot = 0;
+
+    /* Restart the footpod clock with this broadcast session. s_clock_run
+     * clear makes the priming encode below contribute no dt, so the first
+     * page goes out at t = 0 rather than at however long the board had been
+     * powered. */
+    s_elapsed_s = 0.0f;
+    s_clock_run = false;
 
     /* Prime and send the first broadcast page, then open the channel.
      * Subsequent pages go out from EVENT_TX. */

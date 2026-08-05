@@ -21,9 +21,37 @@ int main(void) {
 
     /* time + distance rollover: 300 s -> 300%256=44; 1000.0 m -> 1000%256=232 */
     treadmill_state_t c = { .speed_mps = 3.0f, .distance_m = 1000.0f,
-                            .incline_pct = 0.0f, .elapsed_s = 300 };
+                            .incline_pct = 0.0f, .elapsed_s = 300.0f };
     ant_sdm_encode_page1(&c, p1);
     assert(p1[2] == 44 && p1[3] == 232);
+
+    /* Fractional time must reach byte 1 (1/256 s). The footpod broadcasts at
+     * ~4 Hz, so whole-second-only timestamps repeat across three of every four
+     * pages and a receiver differentiating distance or strides against this
+     * clock hits dt = 0 on those. 12.25 s -> int 12, frac 0.25*256 = 64. */
+    treadmill_state_t t = { .speed_mps = 3.0f, .distance_m = 0.0f,
+                            .incline_pct = 0.0f, .elapsed_s = 12.25f };
+    ant_sdm_encode_page1(&t, p1);
+    assert(p1[1] == 64 && p1[2] == 12);
+
+    /* Successive pages one quarter-second apart must differ in the time
+     * field — the property the fractional byte exists to guarantee. */
+    uint8_t prev[8];
+    ant_sdm_encode_page1(&t, prev);
+    for (int k = 1; k <= 4; k++) {
+        treadmill_state_t n = t;
+        n.elapsed_s = 12.25f + 0.25f * (float)k;
+        ant_sdm_encode_page1(&n, p1);
+        assert(p1[1] != prev[1] || p1[2] != prev[2]);
+        memcpy(prev, p1, 8);
+    }
+
+    /* The fraction must never round up into the next whole second: the
+     * integer byte is a floor, so 255/256 is the ceiling for byte 1. */
+    treadmill_state_t e = { .speed_mps = 0.0f, .distance_m = 0.0f,
+                            .incline_pct = 0.0f, .elapsed_s = 41.9999f };
+    ant_sdm_encode_page1(&e, p1);
+    assert(p1[2] == 41 && p1[1] == 255);
 
     uint8_t p2[8];
     ant_sdm_encode_page2(&b, p2);
