@@ -328,14 +328,29 @@ explained — it never worked, until now.
    connected the delta was always 0 — distance flat, page-1 time field pinned
    at 0. Both now integrate from the app_timer RTC on every TX event
    (`firmware/ant_sdm.c`), which keeps running regardless of the belt link.
-5. **Confirm the invalid-cadence encoding on a recorded run** — flashed in
-   `d5782ac` but never seen on the air. Record any run with the footpod paired
-   and check the cadence field in the resulting .fit: it should now carry
-   wrist-derived cadence instead of a flat 0 spm. If a watch ignores the
-   `0xFF`/`0xF` invalid encoding, the fallback is to transmit **SDM capabilities
-   page 22 (0x16)**, whose bitfield flags cadence as unsupported explicitly — we
-   do not send page 22 at all today, and adding it means a new slot in the
-   68-slot TX cycle in `firmware/ant_sdm.c`.
+5. ~~**Confirm the invalid-cadence encoding on a recorded run**~~ — **ANSWERED
+   2026-08-05, negatively.** `23856353712_ACTIVITY.fit` (48 min, footpod
+   paired) records `record.cadence == 0` in **2758 of 2890 records**. The
+   `0xFF`/`0xF` page-2 encoding from `d5782ac` does not make the watch fall
+   back to wrist cadence — it still sources cadence from us and still gets
+   zero. The likely reason is **page 1 byte 6, the stride count**, hard-coded
+   `0x00` in `core/ant_sdm_encode.c` and sent in 60 of every 64 slots: a
+   counter that never moves is zero strides no matter what page 2 says.
+   Everything Garmin derives from cadence is garbage as a result (avg power
+   613 W, avg run cadence 494 spm with max 0, step length 784 mm against a
+   true 1139 mm). Full breakdown: `docs/sdm-recording-analysis.md`.
+
+   The remaining lever is **SDM capabilities page 22 (0x16)**, which we do not
+   send at all; adding it means a new slot in the 64-slot TX cycle in
+   `firmware/ant_sdm.c`. ⚠ Its bit layout is **unverified** — it could not be
+   confirmed from public Nordic docs, and a wrong guess in that byte would
+   flag speed or distance unsupported and break the product silently. Read
+   `$SDK_ROOT/components/ant/ant_profiles/ant_sdm/pages/ant_sdm_page_22.h` or
+   the thisisant.com SDM device profile first.
+
+   The same .fit turned up a *separate* defect, now fixed — the footpod was
+   broadcasting a frozen page-1 clock (all 8 laps recorded `total_distance` 0
+   and no `avg_speed`). See §6 of that doc.
 6. Cosmetic: pause reports `timer=1(STOPPED)`, never `2(PAUSED)` on this
    watch. Both stop the belt; not worth chasing.
 7. **Score belt accuracy on hardware** — with the new `SDM:TGT` debug mode

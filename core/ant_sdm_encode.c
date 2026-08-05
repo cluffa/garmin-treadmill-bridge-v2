@@ -16,15 +16,30 @@ static uint8_t speed_frac(float mps) {
     return (uint8_t)(r > 255 ? 255 : r);
 }
 
+/* SDM time field: 1/256 s fraction byte + integer-second byte that rolls at
+ * 256 s. Both halves matter. A receiver derives speed and stride rate by
+ * differentiating the sensor's own distance and stride counters against this
+ * clock, so leaving the fraction at 0 — as this did until 2026-08-05 — makes
+ * the timestamp change only once a second while pages go out at ~4 Hz. Three
+ * of every four pages then carry dt = 0 against their predecessor, which is
+ * the degenerate case of exactly the division the receiver is trying to do. */
+static uint8_t time_frac(float s) {
+    if (s < 0) return 0;
+    long r = lroundf((s - floorf(s)) * 256.0f);
+    return (uint8_t)(r > 255 ? 255 : r);
+}
+
 void ant_sdm_encode_page1(const treadmill_state_t *s, uint8_t out[8]) {
     float dist = s->distance_m < 0 ? 0 : s->distance_m;
     uint32_t dist_int = (uint32_t)dist;
     long df = lroundf((dist - floorf(dist)) * 16.0f);
     uint8_t dist_frac = (uint8_t)(df > 15 ? 15 : df) & 0x0F;
 
+    float t = s->elapsed_s < 0 ? 0 : s->elapsed_s;
+
     out[0] = 0x01;                              /* page number */
-    out[1] = 0x00;                              /* time, fractional (unused) */
-    out[2] = (uint8_t)(s->elapsed_s % 256);     /* time, integer s (rolls) */
+    out[1] = time_frac(t);                      /* time, 1/256 s */
+    out[2] = (uint8_t)((uint32_t)t % 256);      /* time, integer s (rolls) */
     out[3] = (uint8_t)(dist_int % 256);         /* distance, integer m (rolls) */
     out[4] = (uint8_t)((dist_frac << 4) | speed_int(s->speed_mps));
     out[5] = speed_frac(s->speed_mps);          /* speed, 1/256 m/s */

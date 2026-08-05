@@ -681,11 +681,16 @@ static void on_hvx_ifit(const ble_gattc_evt_hvx_t *h)
 
     ifit_fsm_note_speed(speed_mps * 3.6f);
 
-    /* Update shared state for OLED, logs, status frames. */
+    /* Update shared state for OLED, logs, status frames. iFit frames carry no
+     * elapsed time, so elapsed_s is simply left alone — it is the treadmill's
+     * own clock and we have nothing to put in it. It used to be assigned 0
+     * here, which was harmless-looking until you notice the ANT footpod was
+     * broadcasting that as its page-1 time field: a sensor reporting a frozen
+     * clock alongside an advancing odometer. firmware/ant_sdm.c now keeps its
+     * own RTC clock and never reads this. */
     app_state()->treadmill.speed_mps   = speed_mps;
     app_state()->treadmill.distance_m  = s_distance_m;
     app_state()->treadmill.incline_pct = incline_pct;
-    app_state()->treadmill.elapsed_s   = 0;
 }
 
 static void on_hvx(const ble_gattc_evt_t *e)
