@@ -142,8 +142,11 @@ something power-cycles the watch.
    `uv run --script test/mock/mock_watch.py`, which finds and connects to it from
    the Mac in seconds.
 
-**Still unfixed:** the app has no recovery path of its own. See Known gaps — the
-2026-08-03 attempt at one made things worse and was reverted.
+**Still unfixed on hardware:** the app's own recovery path. The first
+2026-08-03 attempt made things worse and was reverted; a second,
+constraint-compliant fix was implemented later that evening and builds clean,
+but is **not sideloaded or hardware-verified** — see Known gaps and the
+2026-08-03 (late) Current state entry.
 
 **Update — the bridge is exonerated.** On 2026-08-03, with the bridge holding a
 live iFit link to `I_TL`, `test/mock/mock_watch.py` (which filters on the same
@@ -163,6 +166,73 @@ evidence needed: `GARMIN/APPS/LOGS/CIQ_LOG.YML` off the watch, which records
 and distinguishes the three remaining candidates (profile registration failing,
 `setScanState` throwing, or `compute()` not running).
 
+**2026-08-03 (late): both `docs/open-investigations.md` items worked.** No
+hardware was available (the bridge was not on the USB bus, no watch attached),
+so everything hardware-side below is explicitly **unproven**; everything
+host-side is proven.
+
+*Task A — `tx_drops`.* The counting arithmetic is now **proven on host**: the
+FIFO + drop accounting moved to `core/console_tx_fifo.c` (the
+`connect_backoff.c` extraction pattern) and `test/host/test_console_tx_fifo.c`
+forces every drop path — exact tail counts on partial overflow, byte
+conservation (delivered + dropped == offered), wrap-around, port-state gating.
+The reason a non-zero value had never been observed is structural, found in the
+SDK, not in our code: `app_usbd_cdc_acm_write()` returns
+`NRF_ERROR_INVALID_STATE` whenever DTR is clear
+(`app_usbd_cdc_acm.c:943-948`), so with no tty attached **every** console byte
+took the refused-write path and incremented the counter constantly — and the
+old `PORT_OPEN` reset then zeroed it at the only moment it became readable.
+Both halves of the old design were wrong together: the counter mostly counted
+deliberate drain-to-nowhere, and the reset destroyed the one part that meant
+anything. New semantics (see `core/console_tx_fifo.h`): drops count **only
+while the port is open**, cumulative since boot, never reset — "did I lose
+output during any attached session". ("Did I lose output before I attached" is
+unanswerable by any counter: pre-attach output is always lost in full, by
+design.)
+
+**Proven on hardware 2026-08-10.** PORT_OPEN/PORT_CLOSE/TX_DONE do wire the
+module correctly end-to-end. Run against the TESTBOARD=1 build flashed that day
+(merged main + this WIP), by the protocol below:
+
+- baseline `tx_drops` 0; one 700-byte write of 100 newline-separated `STATUS`
+  commands; 27 replies came back and **`tx_drops` went to 4695** — the 1 KB FIFO
+  overflowed while open, as designed;
+- the tty was then **closed for 12 s**, during which every ~1 s `alive`
+  heartbeat write was refused, and on reopen `tx_drops` was **still exactly
+  4695**.
+
+That second step is the one that matters, and it checks both halves of the new
+semantics at once: the counter is *not* reset on PORT_OPEN (the old bug), and
+refusals while the port is closed are *not* counted (the drain-to-nowhere the
+old counter mostly measured). Exact byte conservation is the host test's job
+(`test/host/test_console_tx_fifo.c`); this only had to show the wiring is real.
+
+Repeat protocol, no special build needed: flash, `make usb-kick`, open the tty,
+burst ~100 `STATUS` commands in one write — the RX drain loop dispatches all
+replies before TX_DONEs are serviced, so the FIFO must overflow while open —
+then close the tty for >10 s and reopen, and the count must be unchanged.
+
+*Task B — the dead-scan wedge.* Root cause confirmed by reading both files
+(it is exactly as the brief states); fix implemented in **both** CIQ projects
+within the reverted-attempt's constraints: the `pairDevice()` catch now only
+sets `mRescanPending` (no BLE call from the callback — the old `startScan()`
+there was provably always a no-op, since `mScanning` is still true at that
+point); a new one-shot `tick()` consumes the flag from plain timer context —
+`compute()` in the data field, the views' 1 s timers in the ctrl app
+(`StatusView` gained one; it had no timer) — and calls `setScanState()` at
+most once per wedge, only after the pending OFF has landed. If `tick()` never
+runs, behaviour degrades to today's dead scan, never worse. Also: the data
+field's bottom row now distinguishes **`PAIR`** (pairing requested, `mDevice`
+set, no CONNECTED yet — the state the old display mislabelled `CONN`) from
+**`CONN`** (link actually up, via new `isLinkUp()`); the `_maybeSend()` write
+guard is deliberately unchanged, so there is no write-path regression risk.
+Both projects compile clean under `monkeyc -l 2` (stamp `0803-2102`), **not
+sideloaded, not run on hardware.** Test protocol: reboot the watch first
+(clear any wedged BLE state), sideload, **read the stamp off the field**, then
+arm the wedge — kill a run without reaching `onStop()` so a stale pairing
+remains, start a new activity, and watch for `--` → (a few seconds) → `SCAN`
+instead of `--` forever. Reboot between every attempt.
+
 ## Test status
 
 `make host-test` — **all green** as of the fix commit:
@@ -170,10 +240,10 @@ and distinguishes the three remaining candidates (profile registration failing,
 | Gate | Count | What |
 |---|---|---|
 | `make check-uuid` | 4 consumers | firmware / mock / both CIQ projects agree on the A6ED base |
-| `test/host` | 10 suites | `ftms_parse` `ftms_devlist` `ifit_parse` `ctrl_dispatch` `ant_sdm_encode` `ifit_fsm` `connect_policy` `connect_backoff` `ctrl_frames` `workout_ctrl` |
+| `test/host` | 11 suites | `ftms_parse` `ftms_devlist` `ifit_parse` `ctrl_dispatch` `ant_sdm_encode` `ifit_fsm` `connect_policy` `connect_backoff` `ctrl_frames` `workout_ctrl` `console_tx_fifo` |
 | `test/mock` | 4 suites | `test_workout_probe` `test_wkt_decode` `test_link_state` `test_script_header` |
 
-`make firmware` links clean (103000 text / 844 data / 16840 bss).
+`make firmware` links clean (102728 text / 844 data / 16848 bss).
 
 `make pace-test` is a **separate** gate (not part of `make host-test` — it needs
 `uv` and a recorded .FIT). It runs the scorer's own self-test against synthetic
@@ -194,10 +264,14 @@ background pages and the page-2 use-state fix. Route: `make usb-kick`, then
 `alive 11` and climbed monotonically — a genuinely fresh boot with `.bss`
 zeroed, not the bootloader and not a stale RAM log.
 
-**Watch data field: build stamp `0803-1918`**, sideloaded 2026-08-03 (MTP file
-id 16779891). It carries the scan-wedge fix and the build stamp itself. **Read
-the stamp off the field's bottom row before trusting any result** — if it does
-not say `0803-1918`, the install did not take and you are testing old code.
+**Watch data field: build stamp `0803-1932`**, sideloaded 2026-08-03 — the
+*revert* of the broken scan-wedge attempt, i.e. the pre-2026-08-03 scan logic
+plus the stamp. (An earlier version of this paragraph said `0803-1918` "with
+the scan-wedge fix" — that build was the one that broke the field and was
+replaced the same evening.) The new deferred-tick fix (`0803-2102`) is built
+but **not sideloaded**. **Read the stamp off the field's bottom row before
+trusting any result** — if it does not match the build you think you shipped,
+the install did not take and you are testing old code.
 
 Note the pre-flash console check also caught the bridge sitting
 `connected:true, name:"I_TL"` with `LIST` showing that single iFit machine — the
@@ -276,6 +350,11 @@ interval with a different target pace didn't always work" report is fully
 explained — it never worked, until now.
 
 ## Next steps, in priority order
+
+> Two items carry a self-contained task brief in **`docs/open-investigations.md`**
+> — the CIQ scan-recovery bug (user-facing; a fix was attempted and reverted, and
+> the brief spells out why so it is not reinvented) and proving the `tx_drops`
+> counter. Read that instead of re-deriving them from the sections below.
 
 0. ~~**Flash + sideload the 2026-08-01 pace fixes and re-run the scoring
    workout.**~~ — **DONE 2026-08-03.** All four fixes confirmed on hardware; see
@@ -455,8 +534,16 @@ concurrency gate remains, per `docs/finishing-plan.md`.
   path did not run". It is exposed through a weak `ctrl_console_drops()` in
   `core/ctrl_dispatch.h` that `firmware/usb_cdc_log.c` overrides; core stays
   pure and the host build links the 0 default. Deliberately *not* on
-  `machine.h`, which is the treadmill facade. Note `PORT_OPEN` resets the
-  counter, so it measures the current console session only.
+  `machine.h`, which is the treadmill facade.
+
+  **2026-08-03 (late): the counter's semantics were redesigned and its
+  arithmetic host-proven** — the FIFO now lives in `core/console_tx_fifo.c`
+  with its own test suite. Drops count only while the port is open, cumulative
+  since boot, no reset on `PORT_OPEN` (the old reset zeroed the history at the
+  only readable moment, and with the port closed the SDK refuses every write,
+  so the old counter mostly measured deliberate drain-to-nowhere). See the
+  Current state entry for the full finding and the hardware protocol still
+  owed.
 
 - ⚠⚠ **The "scan-wedge fix" was attempted 2026-08-03 and REVERTED — it broke the
   field outright. Do not re-apply it as written.** The *analysis* still looks
@@ -491,10 +578,27 @@ concurrency gate remains, per `docs/finishing-plan.md`.
 
   **Workaround until then: reboot the watch.** It is the only thing that clears
   a wedged BLE state, and it fixes the user-visible symptom completely.
-- **`isConnected()` is `mDevice != null`, and `pairDevice()` sets `mDevice`
-  before the link is up** (`CtrlBleDelegate.mc`). The field can therefore
-  display `CONN` while nothing works. Not fixed — but worth knowing when reading
-  the field during a failure: `CONN` is "pairing requested", not "link up".
+
+  **2026-08-03 (late): a constraint-compliant fix is implemented in both CIQ
+  projects — built clean, NOT yet sideloaded or verified on hardware.** The
+  `pairDevice()` catch sets a `mRescanPending` flag only; a one-shot `tick()`
+  consumes it from plain timer context (`compute()` / the ctrl app's view
+  timers) and calls `setScanState()` at most once per wedge, only after the
+  pending OFF callback has landed. No BLE call happens inside any BLE callback
+  and there is no 1 Hz hammering — the two things that made the reverted
+  attempt destructive. Fail-safe: if the flag is never consumed, behaviour is
+  today's dead scan, nothing worse. Hardware protocol is in the Current state
+  entry; **reboot the watch between attempts and read the stamp first.**
+- ~~**`isConnected()` is `mDevice != null`, and `pairDevice()` sets `mDevice`
+  before the link is up**~~ (`CtrlBleDelegate.mc`) — **display fixed
+  2026-08-03 (late), unverified on hardware.** The bottom row now shows `PAIR`
+  for that window and `CONN` only once `onConnectedStateChanged` reports
+  CONNECTED (new `isLinkUp()`). The `_maybeSend()` write guard deliberately
+  still uses the loose `isConnected()` — a pre-link write fails harmlessly in
+  `_issue()`'s catch, and tightening it would make frame delivery depend on
+  the CONNECTED callback firing, a new failure mode for no gain. If the field
+  ever shows `PAIR` while frames demonstrably flow, that callback is not
+  firing on this watch and the display split is itself the diagnostic.
 - ⚠ **A free run does not move the belt, by design.** `decode_action()` returns
   `ACT_NONE` with no structured speed step, meaning "don't touch the belt". This
   has looked like a bug twice. It isn't. *Starting* the belt *requires* a

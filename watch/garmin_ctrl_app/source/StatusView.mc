@@ -1,14 +1,37 @@
 import Toybox.Graphics;
 import Toybox.Lang;
+import Toybox.Timer;
 import Toybox.WatchUi;
 
 // Home screen: bridge link state, current treadmill, and the picker hint.
+// The 1 s timer exists to drive BridgeBle.tick() — the deferred context that
+// re-arms a scan killed by a pairDevice() throw. This is the screen the user
+// is staring at when that wedge shows as "searching…" forever.
 class StatusView extends WatchUi.View {
     hidden var mBle as BridgeBle;
+    hidden var mTimer as Timer.Timer or Null;
 
     function initialize(ble as BridgeBle) {
         View.initialize();
         mBle = ble;
+        mTimer = null;
+    }
+
+    function onShow() as Void {
+        mTimer = new Timer.Timer();
+        (mTimer as Timer.Timer).start(method(:onTick), 1000, true);
+    }
+
+    function onHide() as Void {
+        if (mTimer != null) {
+            (mTimer as Timer.Timer).stop();
+            mTimer = null;
+        }
+    }
+
+    function onTick() as Void {
+        mBle.tick();
+        WatchUi.requestUpdate();
     }
 
     function onUpdate(dc as Dc) as Void {

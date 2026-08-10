@@ -1,6 +1,6 @@
 CORE = ../../core
 CFLAGS = -I$(CORE) -Wall -Wextra -std=c11
-TESTS = test_ftms_parse test_ftms_devlist test_ifit_parse test_ctrl_dispatch test_ant_sdm_encode test_ifit_fsm test_connect_policy test_connect_backoff test_ctrl_frames test_workout_ctrl
+TESTS = test_ftms_parse test_ftms_devlist test_ifit_parse test_ctrl_dispatch test_ant_sdm_encode test_ifit_fsm test_connect_policy test_connect_backoff test_ctrl_frames test_workout_ctrl test_console_tx_fifo
 
 all: $(TESTS)
 	@for t in $(TESTS); do ./$$t || exit 1; done
@@ -33,6 +33,9 @@ test_ctrl_frames: test_ctrl_frames.c $(CORE)/ctrl_frames.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 test_workout_ctrl: test_workout_ctrl.c $(CORE)/workout_ctrl.c
+	$(CC) $(CFLAGS) -o $@ $^ -lm
+
+test_console_tx_fifo: test_console_tx_fifo.c $(CORE)/console_tx_fifo.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 clean:

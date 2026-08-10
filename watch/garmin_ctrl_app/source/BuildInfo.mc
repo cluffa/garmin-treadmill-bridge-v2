@@ -4,7 +4,7 @@ import Toybox.Lang;
 // overwritten by the next build. Regenerate with `make ciq-build`.
 //
 // Rendered on the data field's bottom row next to the link state, so the watch
-// reports which build it is actually running. Built: 2026-08-03 19:01:14 EDT
+// reports which build it is actually running. Built: 2026-08-03 21:02:31 EDT
 module BuildInfo {
-    const STAMP as String = "0803-1901";
+    const STAMP as String = "0803-2102";
 }

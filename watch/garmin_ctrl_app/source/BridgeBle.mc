@@ -22,6 +22,7 @@ class BridgeBle extends BluetoothLowEnergy.BleDelegate {
 
     hidden var mDevice as BluetoothLowEnergy.Device or Null;
     hidden var mScanning as Boolean;
+    hidden var mRescanPending as Boolean;   // re-arm scan from tick(), not a callback
     hidden var mSubscribed as Boolean;
     hidden var mWritePending as Boolean;
 
@@ -39,6 +40,7 @@ class BridgeBle extends BluetoothLowEnergy.BleDelegate {
         BleDelegate.initialize();
         mDevice = null;
         mScanning = false;
+        mRescanPending = false;
         mSubscribed = false;
         mWritePending = false;
         devices = [] as Array<Dictionary>;
@@ -106,7 +108,12 @@ class BridgeBle extends BluetoothLowEnergy.BleDelegate {
                     mDevice = BluetoothLowEnergy.pairDevice(r);
                 } catch (e) {
                     System.println("BLE pair failed: " + e.getErrorMessage());
-                    startScan();
+                    // startScan() here was a permanent wedge: mScanning is
+                    // observed state and still true at this point, so it
+                    // early-returned; the pending OFF then landed and nothing
+                    // restarted the scan. Defer to tick() (view timers) —
+                    // never re-enter the BLE stack from a BLE callback.
+                    mRescanPending = true;
                 }
                 return;
             }
@@ -164,6 +171,17 @@ class BridgeBle extends BluetoothLowEnergy.BleDelegate {
 
     function isConnected() as Boolean { return mDevice != null && mSubscribed; }
     function isScanning() as Boolean { return mScanning; }
+
+    // Consume a deferred rescan request from plain timer context (the views'
+    // 1 s timers). One-shot; see CtrlBleDelegate.tick() in the data field for
+    // the full rationale. Degrades to today's dead scan if never driven.
+    function tick() as Void {
+        if (!mRescanPending) { return; }
+        if (mDevice != null) { mRescanPending = false; return; }
+        if (mScanning) { return; }   // OFF callback not landed yet; next tick
+        mRescanPending = false;
+        startScan();
+    }
 
     // ---- commands -----------------------------------------------------------
 

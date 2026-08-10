@@ -16,6 +16,8 @@ class CtrlBleDelegate extends BluetoothLowEnergy.BleDelegate {
     hidden var mDevice as BluetoothLowEnergy.Device or Null;
     hidden var mProfileRegistered as Boolean;
     hidden var mScanning as Boolean;
+    hidden var mLinkUp as Boolean;              // CONNECTED seen on mDevice
+    hidden var mRescanPending as Boolean;       // re-arm scan from tick(), not a callback
     hidden var mWritePending as Boolean;
     hidden var mQueued as ByteArray or Null;    // frame that arrived mid-write
     hidden var mLinkGen as Number;              // bumped on every (re)connect
@@ -25,6 +27,8 @@ class CtrlBleDelegate extends BluetoothLowEnergy.BleDelegate {
         mDevice = null;
         mProfileRegistered = false;
         mScanning = false;
+        mLinkUp = false;
+        mRescanPending = false;
         mWritePending = false;
         mQueued = null;
         mLinkGen = 0;
@@ -89,7 +93,15 @@ class CtrlBleDelegate extends BluetoothLowEnergy.BleDelegate {
                     mDevice = BluetoothLowEnergy.pairDevice(r);
                 } catch (e) {
                     System.println("BLE pair failed: " + e.getErrorMessage());
-                    startScan();
+                    // Calling startScan() here was always a no-op that wedged
+                    // the scan permanently: mScanning is *observed* state, one
+                    // callback behind, so it is still true at this point and
+                    // startScan() early-returns; the pending OFF callback then
+                    // lands and nothing ever restarts the scan. Re-arming from
+                    // inside a BLE callback is also exactly what broke the
+                    // 2026-08-03 attempt. Defer to tick(), which compute()
+                    // drives from plain timer context.
+                    mRescanPending = true;
                 }
                 return;
             }
@@ -100,6 +112,7 @@ class CtrlBleDelegate extends BluetoothLowEnergy.BleDelegate {
                                      state as BluetoothLowEnergy.ConnectionState) as Void {
         if (state == BluetoothLowEnergy.CONNECTION_STATE_CONNECTED) {
             mDevice = device;
+            mLinkUp = true;
             mWritePending = false;
             mQueued = null;
             mLinkGen++;
@@ -114,10 +127,26 @@ class CtrlBleDelegate extends BluetoothLowEnergy.BleDelegate {
                 }
             }
             mDevice = null;
+            mLinkUp = false;
             mWritePending = false;
             mQueued = null;   // it can never go out on this link now
             startScan();
         }
+    }
+
+    // Consume a deferred rescan request. Called from compute() — plain timer
+    // context, never from inside a BLE callback (constraint from the reverted
+    // 2026-08-03 fix: Connect IQ does not tolerate re-entering the BLE stack
+    // from a BLE callback). One-shot: setScanState() is called at most once
+    // per wedge, only once the pending OFF has actually landed (mScanning
+    // false). If the flag never gets consumed the behaviour is exactly
+    // today's — a scan that stays dead — never anything worse.
+    function tick() as Void {
+        if (!mRescanPending) { return; }
+        if (mDevice != null) { mRescanPending = false; return; }  // paired meanwhile
+        if (mScanning) { return; }         // OFF callback not landed yet; next tick
+        mRescanPending = false;
+        startScan();
     }
 
     // Release BLE resources when the activity ends.
@@ -130,10 +159,19 @@ class CtrlBleDelegate extends BluetoothLowEnergy.BleDelegate {
         } catch (e) {
         }
         mDevice = null;
+        mLinkUp = false;
     }
 
+    // "Pairing requested" — pairDevice() sets mDevice *before* the link is up,
+    // so this alone must not be rendered as CONN. It stays the write-path
+    // guard: a write attempted pre-link just fails harmlessly in _issue().
     function isConnected() as Boolean {
         return mDevice != null;
+    }
+
+    // The link has actually reached CONNECTED. This is what deserves "CONN".
+    function isLinkUp() as Boolean {
+        return mDevice != null && mLinkUp;
     }
 
     function isScanning() as Boolean {

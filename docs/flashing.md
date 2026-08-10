@@ -192,10 +192,18 @@ pyocd commander -t nrf52840 -c "halt" \
 ```
 The board re-enumerates as **"Secure DFU Bootloader"** with its own USB-serial node.
 
-> No SWD probe? The bootloader also enters DFU automatically when the app is
-> invalid/absent. A user-facing "enter DFU" trigger from the app (e.g. a console
-> command or button that sets GPREGRET then resets) is a future nicety — not yet
-> wired up.
+> **No SWD probe? Use the `DFU` console command — this is the normal route.**
+> `make usb-kick`, then write `DFU` to the tty. `cmd_dfu()`
+> (`core/ctrl_dispatch.c`) replies `{"cmd":"dfu","ok":true}` and calls
+> `machine_reboot_to_dfu()` (`firmware/ble_central.c`), which sets the same
+> GPREGRET magic and resets — so it needs no probe and no button. The board
+> re-enumerates as "Secure DFU Bootloader", keeping the same USB serial number,
+> so the `/dev/cu.usbmodem*` node name does **not** change; confirm which
+> firmware is up with
+> `ioreg -r -c IOUSBHostDevice -w 0 | grep "USB Product Name"` rather than by
+> watching for a new node. Verified 2026-08-10.
+>
+> The bootloader also enters DFU on its own when the app is invalid/absent.
 
 ### 6c. Find the bootloader's serial port and flash
 ```sh

@@ -45,6 +45,7 @@ class ScanView extends WatchUi.View {
     }
 
     function onTick() as Void {
+        mBle.tick();      // deferred scan re-arm; see BridgeBle.tick()
         if (mDone) { return; }
         mTicks++;
 

@@ -28,6 +28,7 @@
 #include "nrf_log_backend_interface.h"
 #include "nrf_log_backend_serial.h"
 
+#include "console_tx_fifo.h"
 #include "ctrl_dispatch.h"
 #include "usb_cdc_log.h"
 
@@ -80,21 +81,30 @@ static char s_rx_buf[CDC_READ_SIZE];
  * next. Ordering is preserved, length is unbounded, and the staging buffer is
  * static so EasyDMA is safe even when the caller passed a stack string.
  *
+ * The FIFO and its drop accounting live in core/console_tx_fifo.c so the
+ * arithmetic is host-tested (test/host/test_console_tx_fifo.c) — on hardware
+ * the host drains fast enough that overflow essentially never happens, so the
+ * counting paths were unexercisable in situ. The accounting rule (drops count
+ * ONLY while the port is open; cumulative since boot, never reset) is
+ * documented in that header. app_usbd_cdc_acm_write() refuses every write
+ * while DTR is clear, so with no tty attached ALL output takes the refused
+ * path — those bytes are the by-design drain, not loss, and counting them
+ * would bury the signal. An earlier version reset the counter on PORT_OPEN,
+ * which zeroed it at the only moment it became readable.
+ *
  * usb_cdc_log_write() is called from both IRQ (app_timer -> heartbeat_cb) and
  * thread (cdc_tx_sink) context, so every FIFO access is inside a critical
- * region. A whole line is appended under one region so two writers cannot
- * interleave halves of their messages. When the FIFO is full the excess is
- * dropped (with a diagnostic counter) — blocking in IRQ context would stall the
- * SoftDevice event dispatch.
+ * region (the core module itself is lock-free and caller-serialised). A whole
+ * line is appended under one region so two writers cannot interleave halves of
+ * their messages. When the FIFO is full the excess is dropped — blocking in
+ * IRQ context would stall the SoftDevice event dispatch.
  */
 
 #define CDC_TX_FIFO_SIZE 1024u  /* power of two */
 
-static uint8_t  s_tx_fifo[CDC_TX_FIFO_SIZE];
-static volatile uint16_t s_tx_head;     /* append position                  */
-static volatile uint16_t s_tx_tail;     /* drain position                   */
+static uint8_t          s_tx_fifo_buf[CDC_TX_FIFO_SIZE];
+static console_tx_fifo_t s_tx_fifo;
 static volatile bool     s_tx_busy;     /* a transfer is in flight          */
-static volatile uint32_t s_cdc_tx_drops;/* diagnostic: bytes dropped        */
 
 /* The single in-flight transfer's buffer. Only the pump touches it, and only
  * when s_tx_busy is false, so it cannot be rewritten under EasyDMA. */
@@ -120,21 +130,6 @@ APP_USBD_CDC_ACM_GLOBAL_DEF(m_cdc_acm,
 
 /* ---- TX ring helper (shared by usb_cdc_log_write + log backend) ----------- */
 
-/* Append to the FIFO. Caller MUST hold a critical region, so that all the
- * pieces of one logical line land contiguously. */
-static void fifo_push(const uint8_t *data, size_t len)
-{
-    for (size_t i = 0; i < len; i++) {
-        uint16_t next = (uint16_t)((s_tx_head + 1u) & (CDC_TX_FIFO_SIZE - 1u));
-        if (next == s_tx_tail) {        /* full — drop the rest */
-            s_cdc_tx_drops += (uint32_t)(len - i);
-            return;
-        }
-        s_tx_fifo[s_tx_head] = data[i];
-        s_tx_head = next;
-    }
-}
-
 /* Submit one packet if the endpoint is idle and there is anything to send.
  * Safe to call from anywhere; a no-op while a transfer is in flight, because
  * TX_DONE will call it again. */
@@ -142,19 +137,16 @@ static void cdc_tx_pump(void)
 {
     CRITICAL_REGION_ENTER();
     if (!s_tx_busy) {
-        size_t n = 0;
-        while (n < sizeof(s_tx_dma) && s_tx_tail != s_tx_head) {
-            s_tx_dma[n++] = s_tx_fifo[s_tx_tail];
-            s_tx_tail = (uint16_t)((s_tx_tail + 1u) & (CDC_TX_FIFO_SIZE - 1u));
-        }
+        size_t n = console_tx_fifo_pop(&s_tx_fifo, s_tx_dma, sizeof(s_tx_dma));
         if (n > 0) {
             s_tx_busy = true;
             if (app_usbd_cdc_acm_write(&m_cdc_acm, s_tx_dma, n) != NRF_SUCCESS) {
                 /* Port not open, or the stack refused it. The bytes are gone —
                  * deliberately not pushed back, so a console nobody is reading
-                 * drains instead of wedging every later message behind it. */
+                 * drains instead of wedging every later message behind it.
+                 * Counted as loss only if the port was open (see core module). */
                 s_tx_busy = false;
-                s_cdc_tx_drops += (uint32_t)n;
+                console_tx_fifo_note_refused(&s_tx_fifo, n);
             }
         }
     }
@@ -166,7 +158,7 @@ static void cdc_tx_raw(const uint8_t *data, size_t len)
     if (len == 0) return;
 
     CRITICAL_REGION_ENTER();
-    fifo_push(data, len);
+    console_tx_fifo_push(&s_tx_fifo, data, len);
     CRITICAL_REGION_EXIT();
 
     cdc_tx_pump();
@@ -292,12 +284,12 @@ static void cdc_acm_user_ev_handler(app_usbd_class_inst_t const *p_inst,
     case APP_USBD_CDC_ACM_USER_EVT_PORT_OPEN:
         NRF_LOG_INFO("CDC ACM port opened");
 
-        /* Reset the TX FIFO — any outstanding transfer is stale. */
+        /* Discard stale pre-attach output and free the (stale) in-flight slot.
+         * The drop counter deliberately survives — resetting it here zeroed
+         * the history at the only moment it became readable. */
         CRITICAL_REGION_ENTER();
-        s_tx_head      = 0;
-        s_tx_tail      = 0;
-        s_tx_busy      = false;
-        s_cdc_tx_drops = 0;
+        console_tx_fifo_port_event(&s_tx_fifo, true);
+        s_tx_busy = false;
         CRITICAL_REGION_EXIT();
 
         /* Arm the first read. Must be read_any(), NOT read(): read() only
@@ -309,6 +301,9 @@ static void cdc_acm_user_ev_handler(app_usbd_class_inst_t const *p_inst,
 
     case APP_USBD_CDC_ACM_USER_EVT_PORT_CLOSE:
         NRF_LOG_INFO("CDC ACM port closed");
+        CRITICAL_REGION_ENTER();
+        console_tx_fifo_port_event(&s_tx_fifo, false);
+        CRITICAL_REGION_EXIT();
         break;
 
     case APP_USBD_CDC_ACM_USER_EVT_TX_DONE:
@@ -385,6 +380,8 @@ void usb_cdc_log_init(void)
         .ev_state_proc = usbd_user_ev_handler
     };
 
+    console_tx_fifo_init(&s_tx_fifo, s_tx_fifo_buf, CDC_TX_FIFO_SIZE);
+
     app_usbd_serial_num_generate();
 
     ret_code_t ret = app_usbd_init(&usbd_config);
@@ -426,12 +423,12 @@ void usb_cdc_log_write(const char *msg)
      *
      * Body and terminator go in under one critical region so another writer
      * (an IRQ-context log) cannot land between a line and its CR+LF. Passing
-     * `msg` straight to fifo_push is safe even for a stack string: the FIFO
+     * `msg` straight to the FIFO is safe even for a stack string: the FIFO
      * copies, and the only buffer EasyDMA ever sees is the static staging one.
      */
     CRITICAL_REGION_ENTER();
-    fifo_push((const uint8_t *)msg, len);
-    fifo_push((const uint8_t *)"\r\n", 2);
+    console_tx_fifo_push(&s_tx_fifo, (const uint8_t *)msg, len);
+    console_tx_fifo_push(&s_tx_fifo, (const uint8_t *)"\r\n", 2);
     CRITICAL_REGION_EXIT();
 
     cdc_tx_pump();
@@ -441,7 +438,7 @@ uint32_t usb_cdc_log_drops(void)
 {
     uint32_t n;
     CRITICAL_REGION_ENTER();
-    n = s_cdc_tx_drops;
+    n = console_tx_fifo_drops(&s_tx_fifo);
     CRITICAL_REGION_EXIT();
     return n;
 }

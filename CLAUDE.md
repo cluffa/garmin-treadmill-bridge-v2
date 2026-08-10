@@ -33,6 +33,11 @@ make flash-app                         # ⚠ BROKEN — parks in the bootloader;
 make flash-sd                          # SoftDevice only, chip-erases (⚠ see below)
 make dfu                               # signed USB-DFU package (consumes build)
 make dfu-enter                         # kick running app into DFU (SWD, GPREGRET)
+# No SWD probe attached? Write `DFU` to the USB console instead — same GPREGRET
+# path, no probe needed. This is the working route on this board:
+#   make usb-kick && printf 'DFU\n' > /dev/cu.usbmodemXXXX
+# The bootloader keeps the same USB serial, so the tty node name does NOT change;
+# check `ioreg -r -c IOUSBHostDevice -w 0 | grep "USB Product Name"` instead.
 make flash-dfu SERIAL=/dev/cu.usbmodemXXXX   # push package over USB
 ```
 

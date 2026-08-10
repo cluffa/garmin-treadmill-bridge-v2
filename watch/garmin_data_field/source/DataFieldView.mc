@@ -235,6 +235,11 @@ class DataFieldView extends WatchUi.DataField {
     // No try/catch needed here: _packFrame and _maybeSend each catch
     // internally, and the timerState read is has/null-guarded.
     function compute(info as Activity.Info) as Void {
+        // Consume any deferred scan re-arm first: compute() is the plain timer
+        // context the BLE delegate must not touch the stack outside of.
+        if (mBle != null) {
+            mBle.tick();
+        }
         mLastInfo = info;
         mTimerState = (info has :timerState) && info.timerState != null
             ? info.timerState : Activity.TIMER_STATE_OFF;
@@ -303,10 +308,14 @@ class DataFieldView extends WatchUi.DataField {
         // up mid-run, and a sideload that silently did not take looks exactly
         // like one that did. It stays visible when connected for the same
         // reason: a stale build that still connects is the confusing case.
+        // CONN = link actually up; PAIR = pairDevice() issued but no CONNECTED
+        // yet (the state the old display mislabelled CONN); SCAN = scanning.
         var link = "--";
         if (mBle != null) {
-            if (mBle.isConnected()) {
+            if (mBle.isLinkUp()) {
                 link = "CONN";
+            } else if (mBle.isConnected()) {
+                link = "PAIR";
             } else if (mBle.isScanning()) {
                 link = "SCAN";
             }
