@@ -2,6 +2,7 @@
 #include "ant_network_key.h"
 #include "app_state.h"
 #include "ant_sdm_encode.h"
+#include "sdm_broadcast.h"
 
 #include "ant_interface.h"
 #include "ant_parameters.h"
@@ -86,6 +87,9 @@ static float    s_elapsed_s  = 0.0f;   /* footpod clock, s, wrapped at 256 */
 static uint32_t s_prev_tick  = 0;      /* app_timer ticks at the last encode */
 static bool     s_clock_run  = false;  /* s_prev_tick is valid */
 
+/* Broadcast speed/distance policy — see core/sdm_broadcast.h. */
+static sdm_broadcast_t s_bcast;
+
 /* ---- Target-broadcast debug mode --------------------------------------------
  *
  * When app_state()->sdm_broadcast_target is set (testboard button action
@@ -154,6 +158,21 @@ void ant_sdm_on_tx_event(void)
     /* Every broadcast carries the footpod's clock, never the treadmill's. */
     treadmill_state_t ts_bcast = st->treadmill;
     ts_bcast.elapsed_s = s_elapsed_s;
+
+    /* ...and likewise its own speed and odometer. ble_central.c zeroes the
+     * treadmill struct on disconnect, which broadcast a dead stop through
+     * every BLE dropout while the belt kept running; the policy in
+     * core/sdm_broadcast.c holds speed across a brief drop and keeps the
+     * odometer monotonic across the source's resets. A stop the treadmill
+     * actually reports still passes straight through.
+     *
+     * Known and accepted: central_link goes LINK_UP a little before the first
+     * notification repopulates speed, so a tick or two of the post-memset zero
+     * can reach the air on reconnect — sub-second, and below the watch's 1 Hz
+     * record rate. */
+    sdm_broadcast_step(&s_bcast, st->central_link == LINK_UP,
+                       st->treadmill.speed_mps, st->treadmill.distance_m, dt,
+                       &ts_bcast.speed_mps, &ts_bcast.distance_m);
 
     /* Target-broadcast debug mode: override the belt state with the
      * commanded target. Applies to every page (1 and 2 both carry speed). */
@@ -225,6 +244,7 @@ void ant_sdm_start(void)
      * powered. */
     s_elapsed_s = 0.0f;
     s_clock_run = false;
+    sdm_broadcast_init(&s_bcast);
 
     /* Prime and send the first broadcast page, then open the channel.
      * Subsequent pages go out from EVENT_TX. */

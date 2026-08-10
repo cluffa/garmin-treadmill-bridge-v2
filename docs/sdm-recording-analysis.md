@@ -166,3 +166,117 @@ If page 22 turns out not to carry a cadence-validity bit, the fallback worth
 testing is dropping page 1 in favour of page 2 as the main page — page 2 has no
 stride-count field at all — but that also drops the distance field, so it needs
 its own recorded run to evaluate.
+
+---
+
+# The follow-up run — 2026-08-10
+
+Source data: `23928343294_ACTIVITY.fit` — 33 min wall / 28:37 timer, 4850 m,
+single-step workout ("Base", 9:25/mi, target band 2.694–3.027 m/s), recorded on
+the first firmware carrying the clock fix above. Untracked, like the others.
+
+## 8. The clock fix worked
+
+The prediction in §4 was that fixing the frozen page-1 clock would restore the
+lap accumulators. It did:
+
+| | 2026-08-05 (pre-fix) | 2026-08-10 (post-fix) |
+|---|---|---|
+| lap `total_distance` | **0.0 on all 8 laps** | **4850.39** |
+| lap `avg_speed` | **absent on all 8** | `enhanced_avg_speed` 2.825 |
+
+That is the whole of the defect described in §4, closed.
+
+Worth recording because it was the one soft spot in the diagnosis: page 1
+carries *instantaneous speed* in bytes 4/5, so a receiver does not need the
+clock to know the current speed, and it was not obvious that a frozen clock
+alone would take out the lap summaries. It did. The lap accumulators integrate
+against the sensor's clock even though the speed field does not.
+
+## 9. Cadence is still broken, exactly as predicted
+
+`avg_running_cadence` 253 strides/min, `max_running_cadence` **0**, `avg_power`
+570 W, `avg_step_length` 716.9 mm. §7 said to expect this and why: the stride
+counter in page 1 byte 6 never moves, so Δstrides is zero however good the
+clock is. Page 22 remains the open lever, and its prerequisite header is
+present on this machine at
+`$SDK_ROOT/components/ant/ant_profiles/ant_sdm/pages/ant_sdm_page_22.h`.
+
+## 10. Two pace drops, two unrelated causes
+
+The run showed three speed excursions. One was deliberate — a stop at the 2 mi
+mark (timer 18:53, distance 3225 m = 2.004 mi). The other two were not, and
+they turned out to have nothing to do with each other.
+
+### 10a. timer 25:00 — nothing is wrong
+
+A single record carrying no `enhanced_speed` at all. Distance runs straight
+through it at 2.855 m/s:
+
+```
+29:21  2.855  4225.13
+29:22  None   4227.99      <- renders as a dip; belt never changed
+29:23  2.855  4230.84
+```
+
+13 of 1719 records (0.76%) are like this. It is RF loss, not the TX slot
+pattern — the interleave in `firmware/ant_sdm.c` guarantees at least three
+page 1s inside any one-second window, so the pattern cannot produce a whole
+second with no speed. **No action.** A receiver that renders a missing sample
+as a dip is drawing the gap honestly.
+
+### 10b. timer 23:34 — the treadmill link dropped and the footpod cried stop
+
+```
+27:55  2.855  3988.86     normal
+27:56  0.0    3988.86  <- speed zero, distance FROZEN
+27:57  0.0    3988.86
+27:58  0.0    3988.86
+27:59  2.678  3991.54     resumes, with no catch-up jump
+28:03  2.855  4002.43     back to target
+```
+
+Two fingerprints say this is a data event, not a belt event:
+
+- **The distance froze.** A belt decelerating from 2.855 m/s still covers
+  ground, and it cannot reach zero inside one sample. The odometer stopping
+  dead means the source stopped reporting.
+- **No catch-up on resume.** Distance picks up at +2.68 m/s from where it
+  froze, rather than jumping to account for the ~8.5 m the belt really
+  travelled — the mark of an odometer that was reset and re-baselined, not one
+  that kept counting.
+
+The cause was in the disconnect handler, which zeroed the whole treadmill
+struct under the comment *"belt stops when the link drops"*. That premise is
+false: a dropped BLE link is a comms event, and the treadmill keeps running at
+its set speed. The ANT footpod broadcast that zeroed struct directly, so a 3 s
+dropout told the watch the runner had stopped dead while they were still going
+6.4 mph, and reset the broadcast odometer on top of it.
+
+The same file proves the premise false on its own: the deliberate stop at 18:53
+went through the *connected* path, arriving as a reported speed 0 over a link
+that stayed up. Real belt stops never take the disconnect path.
+
+**Fixed** in `core/sdm_broadcast.c` (host-tested; there is no practical
+hardware test for a 3-second dropout). The footpod now keeps its own broadcast
+speed and odometer, the same way it already keeps its own clock:
+
+- last known speed is **held** for `SDM_LINK_GRACE_S` (5 s) across a link drop,
+  with the odometer advancing to match, then falls to an honest 0;
+- the odometer is **monotonic**, accumulated from source deltas, and rejects
+  implausible deltas in *both* directions. Both directions matters:
+  `core/ftms_parse.c` memsets its output and fills distance only when Treadmill
+  Data flag bit 2 is present, so an FTMS treadmill that omits the field on
+  alternate notifications flaps real → 0 → real, and rejecting only negative
+  deltas would bank the rising edge as a kilometre-scale jump.
+
+A stop the treadmill actually reports still passes through untouched, which is
+the case that must not regress.
+
+Residual, accepted: `central_link` reaches `LINK_UP` slightly before the first
+notification repopulates speed, so one or two 4 Hz ticks of the post-memset
+zero can still reach the air on reconnect. Sub-second, and below the watch's
+1 Hz record rate — in this .FIT the first post-gap sample was already at 2.678.
+
+**Verification is the next recorded run**: the 10b signature (speed 0.000 with
+a frozen odometer) should be extinct. 10a may well recur and is not a fault.

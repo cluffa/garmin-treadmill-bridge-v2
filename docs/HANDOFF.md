@@ -31,6 +31,22 @@ meantime — `docs/flashing.md` §8b is the full no-SWD recipe, and it is how th
 
 ## Current state — one line
 
+**2026-08-10: the SDM clock fix is confirmed on a recorded run, and a second
+defect of the same class is fixed but NOT yet flashed.**
+`23928343294_ACTIVITY.fit` shows the lap accumulators restored — lap
+`total_distance` 4850.39 and `enhanced_avg_speed` 2.825, against 0.0 and absent
+on every lap of the pre-fix run. Cadence is still flat, exactly as predicted;
+page 22 is still the open lever.
+
+The new defect: the footpod broadcast **speed 0 with a frozen odometer** for 3 s
+mid-run because the treadmill BLE link dropped, and the disconnect handler
+zeroed the treadmill struct under the false premise *"belt stops when the link
+drops"*. `core/sdm_broadcast.c` now holds the last speed across a brief drop and
+keeps the odometer monotonic across the source's resets. Host-tested
+(`test_sdm_broadcast`), ARM-built, **not flashed — the bridge was off the USB
+bus when the fix landed.** Flash it, then the next recorded run should show the
+signature gone. Full analysis: `docs/sdm-recording-analysis.md` §8–10.
+
 **The speed-target path is fixed and fully proven against the mock: the data
 field emits clean speed frames (`flags=0x01`), the belt command fires, the
 keepalive holds, and pause/resume/end all behave.** Rest steps now drop the belt

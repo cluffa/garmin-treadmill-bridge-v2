@@ -54,6 +54,7 @@ SRC_FILES += \
   $(CORE_DIR)/connect_backoff.c \
   $(CORE_DIR)/console_tx_fifo.c \
   $(CORE_DIR)/ant_sdm_encode.c \
+  $(CORE_DIR)/sdm_broadcast.c \
 
 # M2 testboard sources (conditionally linked)
 ifeq ($(TESTBOARD),1)

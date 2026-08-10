@@ -957,7 +957,21 @@ static void ble_evt_handler(const ble_evt_t *p_evt, void *p_ctx)
         s_conn_handle = BLE_CONN_HANDLE_INVALID;
         s_proto = 0;
         s_stage = DISC_IDLE;
-        /* Belt stops when the link drops — clear treadmill state. */
+        /* Clear treadmill state: with the link gone we have no readings, and
+         * the OLED/STATUS consumers must not show a stale belt speed forever.
+         *
+         * ⚠ This is NOT "the belt stops when the link drops" — it says so
+         * until 2026-08-10, and that premise is false. A dropped BLE link is a
+         * comms event; the treadmill keeps running at its set speed. When the
+         * user really does stop the belt, the link stays UP and the speed
+         * arrives as a reported 0 through on_hvx_ifit(), never through here.
+         *
+         * The ANT footpod used to broadcast this struct directly, so a 3 s
+         * dropout announced a dead stop to the watch mid-run and reset the
+         * odometer (23928343294_ACTIVITY.fit, timer 23:34). It no longer reads
+         * these fields raw — core/sdm_broadcast.c decides what goes on the
+         * air. Anything else that renders this struct should assume the same:
+         * zero here means "no data", not "stopped". */
         memset(&app_state()->treadmill, 0, sizeof(app_state()->treadmill));
         memset(app_state()->treadmill_name, 0,
                sizeof(app_state()->treadmill_name));
