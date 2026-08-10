@@ -106,6 +106,10 @@ mock-bridge:
 # rebuild with the monkeyc invocation in watch/README.md.
 #   make sideload                          # data field (main product path)
 #   make sideload CIQ_PRJ=garmin_ctrl_app  # once that project is built
+# ⚠ ONE project per plug-in. Both build to out/app.prg and the name survives the
+# transfer, so sending both back to back puts two unrelated apps in GARMIN/Apps
+# under one filename; the second wins on eject and the first never installs (it
+# looks exactly like "the data field vanished"). Unplug between them.
 # The mechanics live in tools/ciq_sideload.sh — every MTP call needs a timeout
 # (Garmin's stack blocks forever instead of erroring) and that is too much shell
 # to keep legible in a recipe. Notable knobs, all documented in the script:

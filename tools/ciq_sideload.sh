@@ -149,8 +149,21 @@ APPS=$(awk '$1 ~ /^[0-9]+$/ && $2 == "Apps" { print $1; exit }' "$TMP")
 # ~4 minutes on 2026-08-02, before any transfer had started. All it buys is a
 # warning: Garmin's MTP delete is unreliable (PTP 2002) and its enumeration is
 # stale (mtp-files reports ids mtp-filetree no longer shows), so nothing is
-# auto-removed either way. Duplicates are dev-noise, not corruption — the watch
-# installs the newest copy since the app id matches. Off by default.
+# auto-removed either way. Off by default.
+#
+# Re-sending the SAME project is dev-noise, not corruption: the watch installs
+# the newest copy because the app id matches.
+#
+# ⚠ Two DIFFERENT projects is a different story, and it bites. Every project
+# builds to out/app.prg and mtp-sendfile keeps the name, so
+#
+#     make sideload && make sideload CIQ_PRJ=garmin_ctrl_app
+#
+# drops two unrelated apps into GARMIN/Apps under one filename. Their app ids
+# do NOT match, the second one wins on eject, and the first is silently never
+# installed — observed 2026-08-10, where it read as "the data field vanished
+# off the watch". Sideload ONE project, unplug so it installs, then replug for
+# the next.
 if [ "$SIDELOAD_CHECK_DUPES" = "1" ]; then
     echo "scanning for an existing app.prg (SIDELOAD_CHECK_DUPES=1; this can be slow)..."
     run_to "$LOOKUP_TIMEOUT" mtp-files
