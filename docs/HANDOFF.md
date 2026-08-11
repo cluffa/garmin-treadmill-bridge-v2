@@ -44,10 +44,11 @@ of the 64-slot cycle (`firmware/ant_sdm.c`). The bit layout that blocked this
 for a week is verified against the SDK profile header.
 
 Flashed over USB-DFU on 2026-08-11 (`DFU` to the console → `make flash-dfu`),
-then reflashed with the build stamp below. **The board reports
-`"build":"0811-1658 7051c10"`** — a readback, not a flash log, and `7051c10` is
-a descendant of the page 22 commit `03fa74b`, so the image running the ANT
-footpod is confirmed to contain page 22.
+then reflashed with the build stamp below. As of the last flash the board
+reported **`"build":"0811-1727 110d0a2"`** — a readback, not a flash log, and
+`110d0a2` descends from the page 22 commit `03fa74b`, so the image running the
+ANT footpod is confirmed to contain page 22. Don't trust that literal string
+after the next flash: ask the board (`STATUS`, or OLED row 7).
 
 **Firmware build stamp — `STATUS` now reports which image is running.**
 `{"cmd":"status",…,"build":"0811-1656 eed970d+",…}`: MMDD-HHMM local build time
