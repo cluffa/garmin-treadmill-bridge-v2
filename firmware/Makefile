@@ -35,7 +35,12 @@ CORE_DIR := ../core
 $(OUTPUT_DIRECTORY)/nrf52840_xxaa.out: LINKER_SCRIPT := xiao_nrf52840_s340.ld
 
 # ---- Project sources --------------------------------------------------------
+# build_stamp.c is GENERATED and git-ignored — see the "Firmware build stamp"
+# block below the Makefile.common include for how and when it is written.
+FW_STAMP_SRC := $(FW_DIR)/build_stamp.c
+
 SRC_FILES += \
+  $(FW_STAMP_SRC) \
   $(FW_DIR)/main.c \
   $(FW_DIR)/usb_cdc_log.c \
   $(FW_DIR)/app_state.c \
@@ -300,6 +305,26 @@ ifneq ($(__do_stamp),)
       mkdir -p $(OUTPUT_DIRECTORY) 2>/dev/null; \
       echo "$$expected" > $(BUILD_STAMP); \
     fi)
+endif
+
+# ---- Firmware build stamp ----------------------------------------------------
+# Regenerate build_stamp.c so STATUS can report which image the board is
+# running. Written at parse time — like the TESTBOARD check above, this runs
+# before any recipe, so the file is on disk before the build graph is walked and
+# there is no race with -j. Its contents change every build, which is what makes
+# make recompile it; a stamp that could go stale would be worse than none, since
+# a stale one gets believed.
+#
+# Gated on the SAME $(__do_stamp) as the TESTBOARD check, and that matters more
+# here: `make dfu` consumes an existing hex without rebuilding, so regenerating
+# the stamp on a non-build goal would leave the source claiming a build that is
+# not in the package it just wrote.
+#
+# The file is git-ignored, so a fresh clone has none — this is what puts it
+# there, and it is why nothing needs to be checked in (contrast BuildInfo.mc,
+# which a plain `monkeyc` requires on disk).
+ifneq ($(__do_stamp),)
+  __fw_stamp := $(shell ../tools/fw_stamp.sh $(FW_STAMP_SRC) >&2)
 endif
 
 # ---- Flash / DFU convenience targets ----------------------------------------

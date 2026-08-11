@@ -121,6 +121,13 @@ __attribute__((weak)) uint32_t ctrl_console_drops(void)
     return 0;
 }
 
+/* Platforms with no build stamp to report get "unknown" — see ctrl_dispatch.h.
+ * Firmware overrides this from the generated firmware/build_stamp.c. */
+__attribute__((weak)) const char *ctrl_build_stamp(void)
+{
+    return "unknown";
+}
+
 static void cmd_status(ctrl_tx_fn tx, void *ctx)
 {
     bool conn = machine_connected();
@@ -129,18 +136,25 @@ static void cmd_status(ctrl_tx_fn tx, void *ctx)
      * describes the console, not the belt, and a truncated STATUS is exactly
      * the case you need it for. */
     unsigned long drops = (unsigned long)ctrl_console_drops();
+    /* Reported unconditionally for the same reason as tx_drops, and one more:
+     * the case you most need it in is the one where the board is behaving
+     * unexpectedly, which is exactly when "is this even the image I flashed?"
+     * has to be answerable without a treadmill in the room. Emitted unescaped —
+     * ctrl_dispatch.h makes ASCII-safety a contract on the implementation. */
+    const char *build = ctrl_build_stamp();
     char buf[256];
     if (!conn || !dev) {
         snprintf(buf, sizeof buf,
-                 "{\"cmd\":\"status\",\"connected\":false,\"tx_drops\":%lu}",
-                 drops);
+                 "{\"cmd\":\"status\",\"connected\":false,"
+                 "\"build\":\"%s\",\"tx_drops\":%lu}",
+                 build, drops);
     } else {
         char name[FTMS_NAME_LEN * 2];
         json_escape(name, sizeof name, dev->name);
         snprintf(buf, sizeof buf,
                  "{\"cmd\":\"status\",\"connected\":true,\"name\":\"%s\","
-                 "\"tx_drops\":%lu}",
-                 name, drops);
+                 "\"build\":\"%s\",\"tx_drops\":%lu}",
+                 name, build, drops);
     }
     tx(buf, ctx);
 }

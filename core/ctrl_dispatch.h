@@ -26,6 +26,26 @@ typedef void (*ctrl_tx_fn)(const char *msg, void *ctx);
  * transport, which core otherwise knows nothing about. */
 uint32_t ctrl_console_drops(void);
 
+/* Which image is running, reported by STATUS as "build" — e.g.
+ * "0811-1712 eed970d+" (MMDD-HHMM local build time, git revision, '+' if the
+ * tree had uncommitted changes).
+ *
+ * Exists because a flash that silently did not take is indistinguishable from
+ * one that worked: the board comes up and answers STATUS either way, and there
+ * was previously nothing to read back that names the image. Debugging code that
+ * was never on the device has already cost this project a session on the watch
+ * side, which is why the data field renders the same kind of stamp.
+ *
+ * The returned string is emitted into a JSON value UNESCAPED, so an
+ * implementation must return plain ASCII containing no '"' and no '\'. It must
+ * also have static storage duration — the caller does not copy it.
+ *
+ * Weakly defined in core as "unknown" (host tests link core alone and have no
+ * image to name). The platform overrides it — on nRF5 that is the generated
+ * firmware/build_stamp.c, written by tools/fw_stamp.sh. Same seam as
+ * ctrl_console_drops() above, and for the same reason: core cannot know it. */
+const char *ctrl_build_stamp(void);
+
 /* Parse and execute one ASCII command line.
  * `tx` is called zero or more times with JSON response strings (no trailing \n).
  * Thread-safe: individual commands are atomic against concurrent dispatches

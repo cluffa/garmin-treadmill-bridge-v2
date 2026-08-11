@@ -77,6 +77,23 @@ int main(void) {
     assert(g_note_manual_calls == 1);
     assert(g_note_manual_last_kind == WORKOUT_CTRL_ACT_STOP);
 
+    /* STATUS must carry a build stamp. It is the only way to tell an image
+     * that was actually flashed from one that silently was not — the board
+     * answers STATUS either way — so its absence is a defect, not cosmetic.
+     * Core alone has no image to name and answers with the weak default;
+     * firmware overrides it from the generated build_stamp.c. */
+    dispatch("STATUS");
+    assert(strstr(g_out, "\"build\":\"unknown\""));
+    /* The stamp is emitted UNESCAPED, so an implementation returning a quote
+     * or backslash would produce malformed JSON. Assert the contract holds for
+     * whatever is linked here rather than trusting the generator. */
+    const char *b = strstr(g_out, "\"build\":\"");
+    assert(b);
+    b += strlen("\"build\":\"");
+    for (const char *p = b; *p && *p != '"'; p++) {
+        assert(*p != '\\' && isprint((unsigned char)*p));
+    }
+
     /* device name with a quote must be escaped so the JSON stays valid */
     g_ndev = 1;
     memset(&g_devs[0], 0, sizeof g_devs[0]);
