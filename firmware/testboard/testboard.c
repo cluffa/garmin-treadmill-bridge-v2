@@ -50,6 +50,7 @@
 #include "app_state.h"
 #include "app_timer.h"
 #include "board_pins.h"
+#include "ctrl_dispatch.h"   /* ctrl_build_stamp() — rendered on row 7 */
 #include "hw_buzzer.h"
 #include "hw_button.h"
 #include "hw_led.h"
@@ -271,7 +272,7 @@ void testboard_init(void)
  *   Row 4  last fault code
  *   Row 5  button hint
  *   Row 6  spare
- *   Row 7  spare
+ *   Row 7  build stamp (which image is running)
  */
 
 static const char *link_label(link_state_t s)
@@ -432,8 +433,20 @@ static void render_tick_cb(void *ctx)
     /* Row 5: button hint */
     ssd1306_text(0, 5, "[btn] cycle  long:RST");
 
-    /* Row 6–7: spare */
+    /* Row 6: spare */
     ssd1306_text(0, 6, "");
+
+    /* Row 7: which image is running — e.g. "0811-1658 7051c10", 18 of the 21
+     * columns. Bottom row on purpose: the CIQ data field puts its stamp in the
+     * same place, so watch and board are read the same way.
+     *
+     * The console already answers this via STATUS, but the console is exactly
+     * what you do not have when the board is on a treadmill with a watch. This
+     * is the case the stamp exists for: a DFU that silently did not take looks
+     * identical to one that worked, and reading the board before trusting a
+     * before/after result is the whole point. Static string with static
+     * storage duration (see ctrl_dispatch.h), so there is nothing to format. */
+    ssd1306_text(0, 7, ctrl_build_stamp());
 
     /* Schedule deferred flush (must NOT run blocking I2C in IRQ context). */
     s_render_pending = true;

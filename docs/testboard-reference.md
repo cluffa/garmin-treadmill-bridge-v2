@@ -34,7 +34,17 @@ hardware PWM blink).
 | 3   | `Act:`         | button cycle position         | Current short-press action (see below)   |
 | 4   | `Fault:`       | `last_fault_code`             | 0 = no fault                             |
 | 5   | `[btn]`        | —                             | Hint: `[btn] cycle  long:RST`            |
-| 6–7 | (spare)        | —                             | Unused                                   |
+| 6   | (spare)        | —                             | Unused                                   |
+| 7   | build stamp    | `ctrl_build_stamp()`          | e.g. `0811-1658 7051c10` — build time, git rev, `+` = uncommitted |
+
+Row 7 answers "which image is this?" without a console, which is the situation
+you are actually in when the board is on a treadmill next to a watch. **Read it
+before trusting any before/after result on hardware**: a DFU that silently did
+not take looks exactly like one that worked, and the watch-side equivalent of
+this mistake has already cost this project a session (see `tools/ciq_stamp.sh`).
+The data field renders its stamp on its own bottom row for the same reason, so
+board and watch are read the same way. The console reports the same string as
+`build` in `STATUS`.
 
 Speeds are shown in km/h with one decimal place (e.g. `  8.0`), right-aligned
 in a 6-character field. Integer arithmetic is used to avoid pulling in
