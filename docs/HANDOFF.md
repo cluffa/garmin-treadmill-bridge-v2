@@ -38,13 +38,24 @@ defect of the same class is fixed but NOT yet flashed.**
 on every lap of the pre-fix run. Cadence is still flat, exactly as predicted;
 page 22 is still the open lever.
 
-**2026-08-11: page 22 lever pulled, unflashed and unverified.** The footpod now
+**2026-08-11: page 22 lever pulled and flashed; unverified.** The footpod now
 broadcasts SDM capabilities page 22 declaring **cadence unsupported**, on slot 7
 of the 64-slot cycle (`firmware/ant_sdm.c`). The bit layout that blocked this
-for a week is verified against the SDK profile header. Builds clean; there is no
-host test that can prove it and **verification is a recorded run** — see
-`docs/sdm-recording-analysis.md` §11, including the instruction to **re-pair the
-footpod first** so a cached capabilities set cannot confound the result.
+for a week is verified against the SDK profile header.
+
+Flashed over USB-DFU on 2026-08-11 (`DFU` to the console → `make flash-dfu`);
+`nrfutil` reported *Device programmed*, the board re-enumerated as the app, and
+`STATUS` answers on the console. ⚠ Note that unlike the CIQ side there is **no
+firmware build stamp** — nothing can be read back off the board to prove which
+image is on it, so that chain of evidence is the flash log, not a readback. A
+stamp in the `STATUS` JSON would close that gap and is worth doing.
+
+The watch needs nothing: no commit has touched `watch/` since the 0810-1625
+stamp, and this change is firmware-only.
+
+**Verification is a recorded run** — see `docs/sdm-recording-analysis.md` §11,
+including the instruction to **re-pair the footpod first** so a cached
+capabilities set cannot confound the result.
 
 The new defect: the footpod broadcast **speed 0 with a frozen odometer** for 3 s
 mid-run because the treadmill BLE link dropped, and the disconnect handler
