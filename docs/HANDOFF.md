@@ -43,11 +43,11 @@ broadcasts SDM capabilities page 22 declaring **cadence unsupported**, on slot 7
 of the 64-slot cycle (`firmware/ant_sdm.c`). The bit layout that blocked this
 for a week is verified against the SDK profile header.
 
-Flashed over USB-DFU on 2026-08-11 (`DFU` to the console → `make flash-dfu`);
-`nrfutil` reported *Device programmed*, the board re-enumerated as the app, and
-`STATUS` answers on the console. That chain of evidence is the flash log, not a
-readback — **the image on the board predates the build stamp below**, so it
-answers `STATUS` without a `build` field. Reflash to get one.
+Flashed over USB-DFU on 2026-08-11 (`DFU` to the console → `make flash-dfu`),
+then reflashed with the build stamp below. **The board reports
+`"build":"0811-1658 7051c10"`** — a readback, not a flash log, and `7051c10` is
+a descendant of the page 22 commit `03fa74b`, so the image running the ANT
+footpod is confirmed to contain page 22.
 
 **Firmware build stamp — `STATUS` now reports which image is running.**
 `{"cmd":"status",…,"build":"0811-1656 eed970d+",…}`: MMDD-HHMM local build time
