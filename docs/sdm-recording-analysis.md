@@ -162,6 +162,9 @@ core function silently. Before implementing, read one of:
 - the ANT+ Stride Based Speed and Distance Monitor device profile from
   thisisant.com.
 
+> **Resolved 2026-08-11.** The layout was read off that SDK header and page 22
+> now broadcasts — see §11. It *does* carry a cadence-validity bit.
+
 If page 22 turns out not to carry a cadence-validity bit, the fallback worth
 testing is dropping page 1 in favour of page 2 as the main page — page 2 has no
 stride-count field at all — but that also drops the distance field, so it needs
@@ -201,6 +204,8 @@ counter in page 1 byte 6 never moves, so Δstrides is zero however good the
 clock is. Page 22 remains the open lever, and its prerequisite header is
 present on this machine at
 `$SDK_ROOT/components/ant/ant_profiles/ant_sdm/pages/ant_sdm_page_22.h`.
+
+That lever is now pulled — §11.
 
 ## 10. Two pace drops, two unrelated causes
 
@@ -280,3 +285,104 @@ zero can still reach the air on reconnect. Sub-second, and below the watch's
 
 **Verification is the next recorded run**: the 10b signature (speed 0.000 with
 a frozen odometer) should be extinct. 10a may well recur and is not a fault.
+
+---
+
+# Capabilities page 22 — 2026-08-11
+
+## 11. The footpod now declares cadence unsupported
+
+§7 named page 22 as the last lever and blocked on one thing: the capabilities
+bitfield's layout was unverified, and the same byte carries the speed and
+distance validity bits, so a wrong guess would flag the product's core function
+unsupported with no visible error. **That block is cleared.** The layout is
+spelled out in the SDK profile, which is on the build machine:
+
+`$SDK_ROOT/components/ant/ant_profiles/ant_sdm/pages/ant_sdm_page_22.h`
+
+```c
+bool time_is_valid     : 1;   /* bit 0 */
+bool distance_is_valid : 1;   /* bit 1 */
+bool speed_is_valid    : 1;   /* bit 2 */
+bool latency_is_valid  : 1;   /* bit 3 */
+bool cadency_is_valid  : 1;   /* bit 4 */
+bool calorie_is_valid  : 1;   /* bit 5 */
+```
+
+A set bit means supported. The matching `ant_sdm_page_22.c` gives the rest of
+the wire layout: one capabilities byte followed by six reserved bytes that its
+encoder `memset`s to `UINT8_MAX`. So the page on the air is
+
+```
+0x16 0x07 0xFF 0xFF 0xFF 0xFF 0xFF 0xFF
+      ^^^^ time | distance | speed supported;
+           cadence, latency, calories NOT
+```
+
+Latency is left unsupported deliberately: we never compute one — page 1 byte 7
+is a constant `0x00` — so claiming it would be a second small lie in a page
+whose entire purpose is to stop telling the first one. Page 1 and page 2 are
+otherwise untouched. In particular the stride counter stays `0x00`: a rolling
+counter has no invalid encoding, which is exactly why no edit to the *data*
+pages can fix this and page 22 is the only place in the profile that can.
+
+### The TX slot
+
+Page 22 takes **slot 7** of the 64-slot cycle in `firmware/ant_sdm.c`,
+converting one page-1 slot. `CYCLE_LEN` stays 64, so pages 80/81 still recur
+every 64 messages (inside the profile's 65-message requirement) and
+`test/pace_lag_report.py`, which parses `CYCLE_LEN` out of that file, is
+unaffected.
+
+Slot 7 is not arbitrary. Every background slot is ≡ 3 (mod 4), and any four
+consecutive slots — one second of air, one watch record — contain exactly one
+slot at that residue. So at most one background page can land in any
+one-second window and at least three page 1s always do, across the cycle wrap
+included. That is the invariant §10a depends on; a background page at any other
+residue would put two in some window and reintroduce the speed holes. Verified
+by simulating the cycle from the actual `#define`s: 59 page 1s per cycle,
+minimum 3 per one-second window, page 22 first on air 1.75 s after broadcast
+start and every 16 s after.
+
+### ⚠ It is broadcast unsolicited
+
+The SDK's own SDM **master** never puts page 22 in its periodic rotation — its
+`next_page_number_get()` emits it only from the request controller, i.e. when
+the display asks with common page 70. We do not implement that; the ANT channel
+is TX-only.
+
+Broadcasting anyway is the right first move for two reasons. The SDK's
+**display** side decodes page 22 whenever it arrives — a plain `case
+ANT_SDM_PAGE_22` in the decode switch, with no request-matching — so an
+unsolicited page is processed. And a request handler only helps if the watch
+actually asks; a watch that queries capabilities at pairing time asked long ago,
+and the periodic broadcast is the only path that reaches an already-paired one.
+
+**If the next run still shows zero cadence, answering page 70 is the next
+lever** — and it will be cleanly attributable, because this change will have
+been ruled out.
+
+### How to verify
+
+Not verifiable on this machine: it needs a flashed board and a recorded run
+(USB-DFU, since SWD is down — `docs/flashing.md` §8b).
+
+**Re-pair the footpod before the verification run** — remove it from the watch's
+sensor list and add it back. If the watch cached capabilities at pairing time,
+when we advertised none, it may never re-read them, and a run recorded on a
+stale pairing cannot distinguish "page 22 doesn't work" from "the watch never
+looked at it".
+
+Then check the .FIT for the §2/§3 signature:
+
+- `record.cadence` should stop being flat zero and should track the wrist —
+  ~80 strides/min at 161 spm, the value §2 showed the watch already has;
+- `max_running_cadence` should stop being **0** and `avg_running_cadence`
+  should land near 80, not 246–253;
+- `avg_power` should fall from ~570–613 W to something near 230 W, and
+  `avg_step_length` should rise toward the ~1139 mm the distance and step count
+  imply.
+
+Speed and distance must be unchanged — lap `total_distance` and
+`enhanced_avg_speed` populated as in §8. Those are the fields the capabilities
+byte could have broken, so they are the regression to check first.

@@ -38,6 +38,14 @@ defect of the same class is fixed but NOT yet flashed.**
 on every lap of the pre-fix run. Cadence is still flat, exactly as predicted;
 page 22 is still the open lever.
 
+**2026-08-11: page 22 lever pulled, unflashed and unverified.** The footpod now
+broadcasts SDM capabilities page 22 declaring **cadence unsupported**, on slot 7
+of the 64-slot cycle (`firmware/ant_sdm.c`). The bit layout that blocked this
+for a week is verified against the SDK profile header. Builds clean; there is no
+host test that can prove it and **verification is a recorded run** — see
+`docs/sdm-recording-analysis.md` §11, including the instruction to **re-pair the
+footpod first** so a cached capabilities set cannot confound the result.
+
 The new defect: the footpod broadcast **speed 0 with a frozen odometer** for 3 s
 mid-run because the treadmill BLE link dropped, and the disconnect handler
 zeroed the treadmill struct under the false premise *"belt stops when the link
@@ -435,13 +443,21 @@ explained — it never worked, until now.
    613 W, avg run cadence 494 spm with max 0, step length 784 mm against a
    true 1139 mm). Full breakdown: `docs/sdm-recording-analysis.md`.
 
-   The remaining lever is **SDM capabilities page 22 (0x16)**, which we do not
-   send at all; adding it means a new slot in the 64-slot TX cycle in
-   `firmware/ant_sdm.c`. ⚠ Its bit layout is **unverified** — it could not be
-   confirmed from public Nordic docs, and a wrong guess in that byte would
-   flag speed or distance unsupported and break the product silently. Read
-   `$SDK_ROOT/components/ant/ant_profiles/ant_sdm/pages/ant_sdm_page_22.h` or
-   the thisisant.com SDM device profile first.
+   The remaining lever was **SDM capabilities page 22 (0x16)**. **Done
+   2026-08-11, awaiting a recorded run.** The bit layout is verified against
+   `$SDK_ROOT/components/ant/ant_profiles/ant_sdm/pages/ant_sdm_page_22.h`
+   (bit 4 is cadence; a set bit means supported), and the footpod now
+   broadcasts `16 07 FF FF FF FF FF FF` — time/distance/speed supported,
+   cadence not — on slot 7 of the 64-slot cycle in `firmware/ant_sdm.c`.
+   `CYCLE_LEN` is unchanged and every background slot stays ≡ 3 (mod 4), which
+   is what keeps ≥3 page 1s in every one-second window.
+
+   ⚠ It is sent **unsolicited**: the SDK's SDM master only emits page 22 in
+   reply to a page-70 request, which we do not implement. The SDK display
+   decodes it unconditionally, and broadcasting is the only path that reaches
+   an already-paired watch. **If the next run still records zero cadence,
+   answering page 70 is the next lever.** Verification procedure, including
+   re-pairing the footpod first, is `docs/sdm-recording-analysis.md` §11.
 
    The same .fit turned up a *separate* defect, now fixed — the footpod was
    broadcasting a frozen page-1 clock (all 8 laps recorded `total_distance` 0

@@ -111,9 +111,12 @@ simultaneous FTMS+iFit connections.
   pages, so a receiver differentiating against it divides by zero.
 - ⚠ **The bridge cannot measure cadence and must not invent one.** It has no
   stride sensor; the watch's wrist cadence is correct and is what should end up
-  in the recording. Today the watch still sources cadence from us and records a
-  flat 0 — the open problem, with the evidence, is
-  `docs/sdm-recording-analysis.md`.
+  in the recording. Capabilities **page 22** (slot 7 of the TX cycle) declares
+  cadence unsupported so the watch falls back to the wrist — bit 4 of byte 1,
+  clear. Never set it, and never touch bits 0-2 (time/distance/speed) without
+  reading `docs/sdm-recording-analysis.md` §11: that byte can flag the
+  product's core function unsupported with no visible error. As of 2026-08-11
+  this is unflashed and **unverified on a recorded run**.
 
 ## Secrets (never committed)
 

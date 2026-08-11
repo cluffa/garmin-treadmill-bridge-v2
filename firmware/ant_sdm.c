@@ -38,13 +38,22 @@
  *
  * Cycle of 64 TX slots (~16 s at 4 Hz), so each common page still repeats
  * every 64 messages, inside the 65-message requirement:
+ *    7  page 22 (capabilities — cadence declared unsupported)
  *   15  page 2 (cadence/status — cadence invalid, treadmill has no stride)
  *   31  common page 80
  *   47  page 2
  *   63  common page 81
  *   all other slots: page 1 (distance/speed)
+ *
+ * Every background slot is ≡ 3 (mod 4), which is what preserves the interleave
+ * invariant: any four consecutive slots — one second of air time, one watch
+ * record — contain exactly one slot ≡ 3 (mod 4), so at most one of them is a
+ * background page and at least three are page 1. That holds across the wrap
+ * ({63,0,1,2}) too. Adding a background page at any other residue would put
+ * two of them in some one-second window and reintroduce the speed holes.
  */
 #define CYCLE_LEN     64
+#define P22_SLOT       7
 #define P2_SLOT_A     15
 #define P80_SLOT      31
 #define P2_SLOT_B     47
@@ -54,6 +63,49 @@
  * Common page 81: SW revision 1, serial number 0xFFFFFFFF (none). */
 static const uint8_t PAGE_80[8] = {0x50,0xFF,0xFF,0x01,0xFF,0x00,0x01,0x00};
 static const uint8_t PAGE_81[8] = {0x51,0xFF,0xFF,0x01,0xFF,0xFF,0xFF,0xFF};
+
+/* ---- Page 22: capabilities ---------------------------------------------------
+ *
+ * The whole point of this page is byte 1, and specifically the *cleared*
+ * cadence bit. The bridge has no stride sensor and must not invent a cadence,
+ * but the watch has been sourcing cadence from us anyway and recording a flat
+ * zero for it — 2758 of 2890 records in 23856353712_ACTIVITY.fit, which then
+ * poisons every metric Garmin derives from cadence (avg power 613 W, avg run
+ * cadence 494 spm with max 0, step length 784 mm against a true 1139 mm).
+ * The page-2 "invalid cadence" encoding (0xFF / 0xF) did not stop that, and
+ * neither can anything else in the data pages: page 1's stride counter is a
+ * rolling count with no invalid encoding, so a receiver differentiating it
+ * always gets a well-formed zero. Page 22 is the only place in the profile
+ * where a sensor can say the field does not exist. Declaring it unsupported
+ * is what should push the watch back onto its own wrist cadence, which
+ * §2 of docs/sdm-recording-analysis.md shows is correct and available.
+ *
+ * Byte 1 bit layout, verified against the SDK profile — this byte was the
+ * blocker on shipping the page, because it also carries the speed and distance
+ * validity bits and a wrong guess would flag the product's core function
+ * unsupported, silently:
+ *
+ *   $SDK_ROOT/components/ant/ant_profiles/ant_sdm/pages/ant_sdm_page_22.h
+ *     bit 0 time  bit 1 distance  bit 2 speed
+ *     bit 3 latency  bit 4 cadence  bit 5 calories   (set = supported)
+ *
+ * so 0x07 = time + distance + speed supported; cadence, latency and calories
+ * not. Latency stays clear because we never compute one — page 1 byte 7 is a
+ * constant 0, and a receiver that honours this byte will ignore it.
+ *
+ * Bytes 2-7 are the page's reserved field: the same SDK header's encoder
+ * (ant_sdm_page_22.c) memsets all six to UINT8_MAX.
+ *
+ * ⚠ Sent unsolicited, on a slot in the rotation. The SDK's own SDM *master*
+ * only emits page 22 in reply to a page-70 request from the display
+ * (next_page_number_get() takes it from the request controller and never from
+ * the periodic rotation), which we do not implement — the channel is TX-only.
+ * The SDK *display* side decodes page 22 whenever it arrives, with no
+ * request-matching, so an unsolicited broadcast is processed. Broadcasting
+ * also reaches a watch that is already paired, which a request handler would
+ * not if the watch only asks at pairing time. If the next recorded run still
+ * shows zero cadence, answering page 70 is the next lever. */
+static const uint8_t PAGE_22[8] = {0x16,0x07,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 
 static uint8_t s_slot;    /* position in the CYCLE_LEN pattern */
 
@@ -199,6 +251,8 @@ void ant_sdm_on_tx_event(void)
         memcpy(pg, PAGE_80, sizeof(pg));
     } else if (s_slot == P81_SLOT) {
         memcpy(pg, PAGE_81, sizeof(pg));
+    } else if (s_slot == P22_SLOT) {
+        memcpy(pg, PAGE_22, sizeof(pg));
     } else if (s_slot == P2_SLOT_A || s_slot == P2_SLOT_B) {
         ant_sdm_encode_page2(ts, pg);
     } else {
