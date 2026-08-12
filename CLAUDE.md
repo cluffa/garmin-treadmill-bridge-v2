@@ -173,6 +173,27 @@ the belt", and `workout_ctrl_tick()` keeps re-asserting the last latched speed.
 *Starting* the belt requires a structured workout with a **speed** target. This
 has looked like a bug twice; it isn't.
 
+## Difficulty scaling
+
+Every workout-derived target is commanded as `base * scale`, where `base` is
+the step target as authored and `scale` is learned from one speed adjustment
+the user makes on any interval (`core/workout_ctrl.c`, spec in
+`docs/superpowers/specs/2026-08-12-workout-difficulty-scaling-design.md`).
+Three things are load-bearing and easy to "simplify" wrongly:
+
+- **A ratio outside [0.5, 1.5] is discarded, never clamped.** A pulled safety
+  key reads as ~0 km/h; clamping it into range restarts the next interval at
+  half pace with nobody having asked.
+- **The belt detector arms on *reach*, not on a settle timer.** No constant
+  covers both a 0.2 km/h nudge and a 4→12 km/h iFit ramp, and arm-on-reach is
+  also what stops a treadmill's own speed ceiling being read as a user
+  adjustment.
+- **`workout_ctrl_reset()` does not reset the scale** — it fires on watch
+  disconnect, and a CIQ BLE blip mid-run must not undo the user's adjustment.
+  Only `TIMER_STATE_OFF` (a fresh activity) and a reboot reset it.
+
+Read it on hardware from `STATUS` (`"scale":100`) or testboard row 6.
+
 The one step that moves the belt without a speed target is a **rest** step
 (`intensity == WORKOUT_INTENSITY_REST`), which is commanded to
 `REST_SPEED_KMH` (4.0) so intervals walk out the rest instead of holding work

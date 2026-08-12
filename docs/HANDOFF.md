@@ -31,6 +31,19 @@ meantime — `docs/flashing.md` §8b is the full no-SWD recipe, and it is how th
 
 ## Current state — one line
 
+**2026-08-12 (latest): workout difficulty scaling is implemented and flashed
+(`0812-1300 254d743`, branch `workout-difficulty-scaling`).** Change the belt
+speed once on any interval and every later interval carries the same relative
+change — `commanded = base * scale`, learned as `observed / base` from either
+the treadmill's own speed buttons or an explicit `SPEED`. Design:
+[`docs/superpowers/specs/2026-08-12-workout-difficulty-scaling-design.md`](superpowers/specs/2026-08-12-workout-difficulty-scaling-design.md).
+`STATUS` gained `"scale":100` and testboard row 6 renders `Diff: 90% Base:  6.0`.
+Verified on hardware: new stamp read back, `"scale":100` reported, treadmill
+link and heartbeat stable with the new 1 Hz belt feed running.
+**Not** verified on hardware: learning from an actual console speed change —
+that needs someone on the belt, and the desk check deliberately did not command
+a real treadmill to move (host tests cover the logic).
+
 **2026-08-11: page 70 is flashed (`0811-2159 4b5988c`) and the watch has been
 observed asking for page 22 by name — `"p70":2,"p70_rej":0,"p70_pg":22` after a
 footpod re-pair.** That was the open question and it is answered: the watch reads
@@ -343,7 +356,7 @@ instead of `--` forever. Reboot between every attempt.
 | Gate | Count | What |
 |---|---|---|
 | `make check-uuid` | 4 consumers | firmware / mock / both CIQ projects agree on the A6ED base |
-| `test/host` | 11 suites | `ftms_parse` `ftms_devlist` `ifit_parse` `ctrl_dispatch` `ant_sdm_encode` `ifit_fsm` `connect_policy` `connect_backoff` `ctrl_frames` `workout_ctrl` `console_tx_fifo` |
+| `test/host` | 13 suites | `ftms_parse` `ftms_devlist` `ifit_parse` `ctrl_dispatch` `ant_sdm_encode` `ifit_fsm` `connect_policy` `connect_backoff` `ctrl_frames` `workout_ctrl` `console_tx_fifo` `sdm_broadcast` `ant_request` |
 | `test/mock` | 4 suites | `test_workout_probe` `test_wkt_decode` `test_link_state` `test_script_header` |
 
 `make firmware` links clean (102728 text / 844 data / 16848 bss).
