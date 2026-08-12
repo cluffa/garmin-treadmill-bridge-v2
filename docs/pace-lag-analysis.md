@@ -241,6 +241,17 @@ number is the measurement, not the belt.
   `walk`. A baseline and a candidate recorded under different rest policies are
   not comparable, and the script says so.
 
+⚠ **A third one, from 2026-08-12: the scorer does not know about difficulty
+scaling.** It rebuilds the commanded trace from the .FIT's *authored* workout
+steps, so a run recorded with a learned scale ≠ 1.0 (the whole workout
+deliberately, say, 10% slower — see `core/workout_ctrl.c`) is graded against
+speeds the firmware was never trying to hit. Expect a level error on every
+interval and a badly inflated IAE, with the *lag* numbers still roughly
+readable. **Before believing a bad score, check the scale for that session** —
+`"scale"` in the console's `STATUS`, or testboard row 6. There is no override
+flag: nothing has needed one yet, and inventing one before a real scaled trace
+exists would be guessing at its shape.
+
 ---
 
 ## 5. Status
