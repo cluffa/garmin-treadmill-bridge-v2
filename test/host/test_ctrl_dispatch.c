@@ -33,8 +33,14 @@ int    machine_get_devices(ftms_device_t *out, int max) {
     return n;
 }
 void   machine_connect(const ftms_device_t *d) { (void)d; g_connect_calls++; }
-bool   machine_connected(void) { return false; }
-const ftms_device_t *machine_connected_device(void) { return NULL; }
+/* STATUS has two format strings, one per branch, and only the disconnected one
+ * used to be reachable from here — so a typo in the connected reply's JSON
+ * could ship unnoticed. Settable, and set back to disconnected immediately
+ * after, so every other assertion below sees the original stubs. */
+bool                 g_connected;
+const ftms_device_t *g_connected_dev;
+bool   machine_connected(void) { return g_connected; }
+const ftms_device_t *machine_connected_device(void) { return g_connected_dev; }
 bool   machine_set_speed(float kmh) { g_last_speed = kmh; g_speed_called = true; return true; }
 bool   machine_set_incline(float pct) { (void)pct; return true; }
 bool   machine_stop(void) { return true; }
@@ -101,6 +107,30 @@ int main(void) {
     assert(strstr(g_out, "\"p70\":0"));
     assert(strstr(g_out, "\"p70_rej\":0"));
     assert(strstr(g_out, "\"p70_pg\":0"));
+
+    /* ...and so must the connected reply, which is a second format string. The
+     * counters describe the ANT channel, so a treadmill being present has
+     * nothing to do with whether they are readable — and this is the branch you
+     * actually read them on, with a watch in the room. */
+    ftms_device_t sdev;
+    memset(&sdev, 0, sizeof sdev);
+    strcpy(sdev.name, "I_TL");
+    g_connected     = true;
+    g_connected_dev = &sdev;
+    dispatch("STATUS");
+    assert(strstr(g_out, "\"connected\":true"));
+    assert(strstr(g_out, "\"name\":\"I_TL\""));
+    assert(strstr(g_out, "\"build\":\"unknown\""));
+    assert(strstr(g_out, "\"tx_drops\":0"));
+    assert(strstr(g_out, "\"p70\":0"));
+    assert(strstr(g_out, "\"p70_rej\":0"));
+    assert(strstr(g_out, "\"p70_pg\":0"));
+    /* Both replies must be complete JSON objects — the reason cmd_status sizes
+     * its buffer for the worst case rather than relying on snprintf's
+     * truncation, which would leave valid-looking but unparseable output. */
+    assert(g_out[strlen(g_out) - 1] == '}');
+    g_connected     = false;
+    g_connected_dev = NULL;
 
     /* device name with a quote must be escaped so the JSON stays valid */
     g_ndev = 1;
