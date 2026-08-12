@@ -603,20 +603,32 @@ clock's RTC differencing is unaffected.
 
 ### 13.4 How to verify
 
-Not verifiable on this machine. `make host-test` and `make firmware` pass; the
-map file confirms the three `ctrl_sdm_p70_*` symbols resolve to `ant_sdm.c.o`
-rather than core's weak zeros, so `STATUS` is reading the real counters.
+`make host-test` and `make firmware` pass, and the map file confirms the three
+`ctrl_sdm_p70_*` symbols resolve to `ant_sdm.c.o` rather than core's weak zeros,
+so `STATUS` is reading the real counters.
 
-On hardware, in order:
+**Flashed 2026-08-11 over USB-DFU** (§8b, no probe). The board's own readback:
 
-1. DFU the image, then **read the build stamp back** off `STATUS` — the board is
-   the authority, and a DFU that did not take looks identical to one that did.
-2. With the console attached, remove the footpod from the watch's sensor list
-   and add it back. Watch `p70`. This is the decisive step and it needs no
+```
+{"cmd":"status","connected":true,"name":"I_TL","build":"0811-2159 4b5988c","tx_drops":0,"p70":0,"p70_rej":0,"p70_pg":0}
+```
+
+Two independent confirmations in one line — the stamp names the page-70 commit's
+descendant, and the `p70` fields are *present at all*, which the previous image
+could not do. The treadmill link came back up by itself after the reboot, so the
+central is unharmed.
+
+Remaining steps, in order:
+
+1. With the console attached, remove the footpod from the watch's sensor list
+   and add it back. Watch `p70`. **This is the decisive step** and it needs no
    treadmill, no workout and no .FIT.
-3. Start a run and check `p70` again — a watch that asks at run start rather
+2. Start a run and check `p70` again — a watch that asks at run start rather
    than at pairing is still hypothesis 1.
-4. Only if `p70` moved is a recorded run worth downloading. Then check the §12.1
+3. Only if `p70` moved is a recorded run worth downloading. Then check the §12.1
    table: `avg_running_cadence` near 80 with `max_running_cadence` non-zero,
    `avg_power` near 230 W, `avg_step_length` near 1100 mm — and speed/distance
    unchanged, per §12.3.
+
+The counter reads 0 as flashed, which means nothing yet: nothing has asked. Only
+a 0 that survives step 1 *and* step 2 is evidence.

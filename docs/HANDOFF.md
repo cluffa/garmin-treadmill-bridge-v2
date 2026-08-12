@@ -32,9 +32,10 @@ meantime — `docs/flashing.md` §8b is the full no-SWD recipe, and it is how th
 ## Current state — one line
 
 **2026-08-11: the clock fix holds, page 22 is ruled out on hardware, and page 70
-request handling is written but NOT yet flashed. The next action is a re-pair
-with the console attached, reading `STATUS`'s new `p70` counter — that single
-reading decides whether cadence is fixable at all.**
+request handling is flashed and live (`0811-2159 4b5988c`). The next action is a
+re-pair with the console attached, reading `STATUS`'s new `p70` counter — that
+single reading decides whether cadence is fixable at all. It reads 0 right now,
+which means nothing yet: nothing has asked.**
 
 **2026-08-10: the SDM clock fix is confirmed on a recorded run, and a second
 defect of the same class is fixed but NOT yet flashed.**
@@ -48,7 +49,20 @@ watch ever asks.** `core/ant_request.c` + `firmware/ant_sdm.c` decode a common
 page 70 request and put the requested page (1/2/22/80/81) on the next TX slot,
 acknowledged or broadcast as asked, spread one per four slots and capped so the
 speed-hole interleave degrades to two page 1s per second instead of zero.
-`make host-test` and `make firmware` pass; **unflashed.**
+`make host-test` and `make firmware` pass.
+
+**Flashed over USB-DFU on 2026-08-11** (`make dfu` → `DFU` to the console →
+`make flash-dfu`, the §8b no-probe route). Read back off the board afterwards:
+
+```
+{"cmd":"status","connected":true,"name":"I_TL","build":"0811-2159 4b5988c","tx_drops":0,"p70":0,"p70_rej":0,"p70_pg":0}
+```
+
+A readback, not a flash log. `4b5988c` is the page-70 commit's descendant, and
+the `p70` fields being *present* is a second, independent confirmation that this
+image is the new one — the previous image could not emit them at all. The
+treadmill link came back up on its own after the reboot. Don't trust that
+literal string after the next flash: ask the board (`STATUS`, or OLED row 7).
 
 The diagnostic matters more than the feature. `STATUS` now ends
 `…,"p70":0,"p70_rej":0,"p70_pg":0` — requests accepted, requests we could not
