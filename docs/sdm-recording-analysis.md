@@ -386,3 +386,134 @@ Then check the .FIT for the §2/§3 signature:
 Speed and distance must be unchanged — lap `total_distance` and
 `enhanced_avg_speed` populated as in §8. Those are the fields the capabilities
 byte could have broken, so they are the regression to check first.
+
+## 12. Page 22 does not work either — 2026-08-11
+
+Source data: `test/23943114012_ACTIVITY.fit` — a 44-minute 'Threshold' workout
+(10:00 warmup @ 10.30 km/h, 20:00 @ 12.80, 10:00 cooldown @ 10.30), started
+19:22 local, with a manual 4-minute pause at 19:52.
+
+The §11 preconditions were both met. The footpod was removed from the watch's
+sensor list and re-added **after** the flash, so the watch re-read capabilities
+with page 22 on air. And the board itself was asked, not a flash log:
+
+```
+{"cmd":"status","connected":true,"name":"I_TL","build":"0811-1727 110d0a2","tx_drops":0}
+```
+
+`110d0a2` descends from the page 22 commit `03fa74b`, so the image that
+broadcast during this run declared cadence unsupported. **The verdict is a
+clean negative: page 22 changes nothing.**
+
+### 12.1 The signature is unchanged
+
+| | 2026-08-10 (no page 22) | 2026-08-11 (page 22) | should be |
+|---|---|---|---|
+| `record.cadence` flat zero | 1695/1719 (98.6%) | **2365/2406 (98.3%)** | ~80 |
+| `avg_running_cadence` | 253 | **252** | ~80 |
+| `max_running_cadence` | **0** | **0** | ~85 |
+| `avg_power` | 570 W | 650 W | ~230 W |
+| `avg_step_length` | 716.9 mm | 807.6 mm | ~1100 mm |
+
+Not a partial improvement — the same defect, to within run-to-run noise.
+
+### 12.2 The watch *does* have a wrist fallback, and a slow belt triggers it
+
+This is the new evidence, and it is stronger than the negative result. In both
+runs the nonzero-cadence records form **exactly one window** (t=2049–2089 here,
+41 records; t=1403–1428 in the control, 24 records with a two-record dropout at
+1406), and both windows open on a footpod speed collapse to the 0.886 m/s idle
+floor:
+
+```
+2026-08-11 (page 22 on air)             2026-08-10 (control)
+   t     spd    cad    pow                 t     spd    cad    pow
+2049   0.886     48   None              1403   0.886     60   None   <- idle floor
+2050   0.886     47     93              1404   0.886     60     15
+2052   0.886     47     91              1405   0.886     60    117
+2053   2.855     50    252   <- belt    1406   0.886      0     32
+2058   2.855     65    237      back    1410   0.886     70    123
+2061   2.855     76    373      up      1411   2.855     70    378   <- belt back up
+2067   2.855     81    371              1418   2.855     80    377
+2089   2.855     81    374              1428   2.855     81    376
+2090   2.855      0    374   <- snaps   1429   2.855      0    581   <- snaps back
+2091   2.855      0    579      back    1430   2.855      0    581
+```
+
+Two things to read off that, and the second is the important one.
+
+**The wrist path is intact and its whole downstream is correct.** Inside the
+windows, cadence settles at 81 strides/min (162 spm), power at ~373 W, and
+`step_length` at ~1057 mm — all three within a few percent of what §3 predicted
+from the distance and step count, against 650 W / 808 mm for the run as a whole.
+The watch is not missing this data. It has it, and it computes correctly from it.
+
+**The footpod stream was healthy the whole time, and the watch went back to it
+anyway.** This is where the earlier framing of these windows as "the stream was
+absent" was wrong: `enhanced_speed` is present and quantised at 2.855 m/s and
+`distance` advances 2.855 m per record straight through, so for ~37 s (~18 s in
+the control) the watch recorded **footpod speed and wrist cadence
+simultaneously** — the two sources are selected independently. Then at t=2090 it
+reverts to footpod cadence in a single record, zero again, power stepping
+374 → 579 W. **Page 22 was on air throughout, every 16 s, declaring cadence
+unsupported, and the watch chose us for cadence anyway.** That is the negative
+result observed directly rather than inferred from the summary fields.
+
+What triggers the fallback is a footpod speed collapse while the runner is still
+moving, not the page 22 declaration — 2026-08-11's was the post-pause belt
+spin-up, 2026-08-10's was the §10b link blip. It persists ~18–37 s past the
+return to normal speed and then ends. No mechanism is claimed for that duration;
+the 48 → 81 ramp at the start of each window is the watch's own cadence average
+filling, not switch latency.
+
+Two hypotheses survive, and they are now the whole question:
+
+1. **The watch reads capabilities only by asking, and we never answer.** The
+   re-pair happened with page 22 already on air, so a plain pairing-time cache
+   does not explain this — but a watch that learns capabilities by *requesting*
+   them with common page 70 and discards unsolicited page 22s does. §11 flagged
+   exactly this asymmetry: the SDK's own master emits page 22 only from the
+   request controller, and we have no request handler at all.
+2. **The watch ignores page 22 for cadence-source selection entirely** and keys
+   off the data pages alone, in which case no capabilities work can fix it.
+
+Answering page 70 discriminates between them and is the next lever, exactly as
+§11 said it would be — the difference now is that it is cleanly attributable,
+because the unsolicited-broadcast path has been ruled out on hardware.
+
+### 12.3 Speed and distance survived — the regression check passes
+
+The first thing to check was whether the capabilities byte broke the fields it
+shares a byte with. It did not. All four laps carry both accumulators:
+
+```
+lap 0  warmup    total_distance 1701.34  enhanced_avg_speed 2.836
+lap 1  interval  total_distance 4251.50  enhanced_avg_speed 3.543
+lap 2  cooldown  total_distance 1706.63  enhanced_avg_speed 2.844
+lap 3  (3.975 s) total_distance    8.57  enhanced_avg_speed 2.156
+session          total_distance 7668.04  enhanced_avg_speed 3.190
+```
+
+§8's fix is still in force with page 22 on air. Declaring time, distance and
+speed supported (`0x07`) is correct and does no harm.
+
+### 12.4 Belt tracking, and a scorer limitation this run exposed
+
+Only two commanded transitions, so this is a weak lag sample, but both are
+clean: edge lag **5 s** on 10.30→12.80 and **2 s** on 12.80→10.30, transient
+area 4.88 m. Steady-state tracking is essentially exact — the recorded trace
+sits +0.006 m/s off the 10.30 km/h command and +0.007 m/s off the 12.80 one.
+
+⚠ **Ignore `pace_lag_report.py`'s headline on this file.** It reports
+`effective_lag=540.628 s`, which is an artifact, not a regression: the scorer is
+not pause-aware. The 247 s manual pause leaves a hole in the record stream while
+the reference command `c(t)` runs straight through it, and the whole hole lands
+in the *steady state* bucket — 2.86 m/s × 247 s = 706 m, against the 725.97 m
+the report attributes there. The transient bucket (4.88 m) is unaffected and is
+the number to read. Making the scorer skip `timer stop_all` → `timer start`
+spans is a known todo; until then, score unpaused runs only.
+
+The 30 flagged dropouts are 28 single missing records (RF loss, §10a — phase
+concentration 0.281, not clustered on the page schedule) plus two genuine belt
+events: the 6 s start ramp, and 4 s at 0.886 km/h at t=2049 where the belt was
+still spinning up after the pause.

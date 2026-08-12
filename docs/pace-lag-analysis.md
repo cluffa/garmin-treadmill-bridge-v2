@@ -264,3 +264,27 @@ workouts. Pre-fix rested at work pace (Σ|Δ| ≈ 3.2 m/s over 19 changes); post
 rests at 4 km/h (Σ|Δ| ≈ 39 m/s over 29 changes), so absolute area is ~12× larger
 by construction. `effective_lag_s` = IAE/Σ|Δ| normalises exactly this out and is
 the only cross-workout comparable metric.
+
+---
+
+## 6. Known limitation: the scorer is not pause-aware
+
+⚠ **A manual timer pause invalidates every area-derived number.** A paused run
+has no records for the paused span, but the reference command `c(t)` is built
+from lap `start_time`s on wall-clock and runs straight through it, so the entire
+hole is scored as level error and lands in the **steady state** bucket.
+
+Observed on `test/23943114012_ACTIVITY.fit` (2026-08-11), a 44-minute threshold
+workout with one 247 s pause: the report claims `effective_lag = 540.628 s` with
+725.97 m of steady-state area, against 2.86 m/s × 247 s = **706 m** of pause —
+i.e. the headline is ~97% pause. The transient bucket (4.88 m) and the
+per-transition edge lags (5 s, 2 s) are unaffected and remain readable.
+
+Note the dropout list does **not** warn you: it only flags records that exist
+but carry no speed, so a span with no records at all passes silently. Check the
+`event_mesgs` instead — a `timer`/`stop_all` that is not the final one means the
+run was paused.
+
+Until the scorer learns to excise `timer stop_all` → `timer start` spans from
+both signals, **only score runs recorded without a pause**, and read the
+transient bucket rather than the headline when scoring one that has one.

@@ -31,6 +31,9 @@ meantime — `docs/flashing.md` §8b is the full no-SWD recipe, and it is how th
 
 ## Current state — one line
 
+**2026-08-11: the clock fix holds, and the cadence lever (page 22) is now ruled
+out on hardware — page 70 request handling is next.**
+
 **2026-08-10: the SDM clock fix is confirmed on a recorded run, and a second
 defect of the same class is fixed but NOT yet flashed.**
 `23928343294_ACTIVITY.fit` shows the lap accumulators restored — lap
@@ -38,7 +41,20 @@ defect of the same class is fixed but NOT yet flashed.**
 on every lap of the pre-fix run. Cadence is still flat, exactly as predicted;
 page 22 is still the open lever.
 
-**2026-08-11: page 22 lever pulled and flashed; unverified.** The footpod now
+**2026-08-11 (later): page 22 is verified NOT to work.** `23943114012_ACTIVITY.fit`
+— re-paired footpod, board self-reporting `0811-1727 110d0a2` (descends from the
+page 22 commit `03fa74b`) — shows `avg_running_cadence` **252**, `max_running_cadence`
+**0**, cadence flat zero in 98.3% of records: identical to the Aug-10 control run
+with no page 22 at all. Speed and distance are unharmed (all four laps carry
+`total_distance` and `enhanced_avg_speed`), so the capabilities byte itself is
+correct and harmless. **Next lever: answer common page 70 requests.** Full
+evidence in `docs/sdm-recording-analysis.md` §12 — including the direct
+observation that beats the summary fields: after a belt spin-up the watch used
+*wrist* cadence for 37 s (correct 81 spm, 373 W, 1057 mm step length) while
+still recording our speed, then reverted to our zero cadence in a single record
+with page 22 on air the whole time.
+
+**2026-08-11: page 22 lever pulled and flashed.** The footpod now
 broadcasts SDM capabilities page 22 declaring **cadence unsupported**, on slot 7
 of the 64-slot cycle (`firmware/ant_sdm.c`). The bit layout that blocked this
 for a week is verified against the SDK profile header.

@@ -116,7 +116,10 @@ simultaneous FTMS+iFit connections.
   clear. Never set it, and never touch bits 0-2 (time/distance/speed) without
   reading `docs/sdm-recording-analysis.md` §11: that byte can flag the
   product's core function unsupported with no visible error. As of 2026-08-11
-  this is unflashed and **unverified on a recorded run**.
+  page 22 is flashed and **verified not to fix cadence** — the recording still
+  shows `avg_running_cadence` 252 / `max` 0 on a re-paired footpod
+  (`docs/sdm-recording-analysis.md` §12). Keep the page: the byte is correct and
+  speed/distance are unharmed. The next lever is answering common page 70.
 
 ## Secrets (never committed)
 
