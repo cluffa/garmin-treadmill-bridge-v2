@@ -25,6 +25,11 @@ void workout_ctrl_note_manual(int kind, float kmh) {
 void workout_ctrl_reset(void) {}
 void workout_ctrl_tick(void) {}
 void workout_ctrl_on_frame(const uint8_t *d, uint16_t len) { (void)d; (void)len; }
+void workout_ctrl_note_belt(float kmh) { (void)kmh; }
+/* 0.9 rather than 1.0: STATUS must report the live scale, and a stub returning
+ * the default would let a hardcoded 100 pass. */
+float workout_ctrl_scale(void) { return 0.9f; }
+float workout_ctrl_base_kmh(void) { return 0.0f; }
 
 void   machine_start_scan(void) {}
 int    machine_get_devices(ftms_device_t *out, int max) {
@@ -108,6 +113,12 @@ int main(void) {
     assert(strstr(g_out, "\"p70_rej\":0"));
     assert(strstr(g_out, "\"p70_pg\":0"));
 
+    /* ...and the difficulty scale, as an integer percent. With TESTBOARD=0
+     * this is the only way to see it: everything else about scaling is
+     * invisible, since a scaled workout looks exactly like a correctly
+     * authored one. The stub returns 0.9, so a hardcoded 100 fails here. */
+    assert(strstr(g_out, "\"scale\":90"));
+
     /* ...and so must the connected reply, which is a second format string. The
      * counters describe the ANT channel, so a treadmill being present has
      * nothing to do with whether they are readable — and this is the branch you
@@ -125,6 +136,7 @@ int main(void) {
     assert(strstr(g_out, "\"p70\":0"));
     assert(strstr(g_out, "\"p70_rej\":0"));
     assert(strstr(g_out, "\"p70_pg\":0"));
+    assert(strstr(g_out, "\"scale\":90"));
     /* Both replies must be complete JSON objects — the reason cmd_status sizes
      * its buffer for the worst case rather than relying on snprintf's
      * truncation, which would leave valid-looking but unparseable output. */

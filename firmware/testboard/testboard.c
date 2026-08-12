@@ -271,7 +271,7 @@ void testboard_init(void)
  *   Row 3  current test action
  *   Row 4  last fault code
  *   Row 5  button hint
- *   Row 6  spare
+ *   Row 6  difficulty scale + unscaled step target
  *   Row 7  build stamp (which image is running)
  */
 
@@ -433,8 +433,23 @@ static void render_tick_cb(void *ctx)
     /* Row 5: button hint */
     ssd1306_text(0, 5, "[btn] cycle  long:RST");
 
-    /* Row 6: spare */
-    ssd1306_text(0, 6, "");
+    /* Row 6: difficulty scale + the authored target it multiplies.
+     *
+     * Exactly 21 columns: "Diff:" + " 90%" + " Base:" + "   6.0". Row 2
+     * already shows the product (Targ = Base * Diff), so the three rows read
+     * as the whole calculation. Percent as an integer — newlib-nano cannot
+     * format %f (see format_speed_kmh), and a scale is a percentage anyway.
+     *
+     * This row is the only visible sign that scaling happened at all: a
+     * workout running 10% slow looks exactly like one authored 10% slower. */
+    {
+        unsigned pct = (unsigned)(workout_ctrl_scale() * 100.0f + 0.5f);
+        int n = snprintf(line, sizeof(line), "Diff:%3u%% Base:", pct);
+        if (n > 0 && n < (int)sizeof(line))
+            format_speed_kmh(line + n, sizeof(line) - n,
+                             workout_ctrl_base_kmh() / 3.6f);
+        ssd1306_text(0, 6, line);
+    }
 
     /* Row 7: which image is running — e.g. "0811-1658 7051c10", 18 of the 21
      * columns. Bottom row on purpose: the CIQ data field puts its stamp in the

@@ -65,7 +65,16 @@ static void heartbeat_cb(void *ctx)
      * jitter, an iFit write outside its poll slot) would never self-heal —
      * the belt would sit at the wrong speed. This is the core of the
      * device-is-the-brain policy; workout_ctrl_tick() is a no-op until a
-     * frame has latched a target. */
+     * frame has latched a target.
+     *
+     * Feed the belt speed first. That is how a speed change made on the
+     * treadmill's own console becomes a difficulty adjustment for the whole
+     * rest of the workout, and feeding it before the tick lets it hold the
+     * keepalive off in the same second rather than a second late. Skipped
+     * while the link is down: app_state holds the *last* reading, and a stale
+     * one would read as the belt diverging from what we commanded. */
+    if (machine_connected())
+        workout_ctrl_note_belt(app_state()->treadmill.speed_mps * 3.6f);
     workout_ctrl_tick();
 
     /* Push the treadmill link state to a subscribed watch on change so the

@@ -166,24 +166,31 @@ static void cmd_status(ctrl_tx_fn tx, void *ctx)
     unsigned long p70     = (unsigned long)ctrl_sdm_p70_requests();
     unsigned long p70_rej = (unsigned long)ctrl_sdm_p70_rejects();
     unsigned      p70_pg  = (unsigned)ctrl_sdm_p70_last_page();
+    /* Difficulty scale as an integer percent (100 = the workout as authored).
+     * Integer on purpose: newlib-nano without -u _printf_float cannot format
+     * %f, so a float here would print empty or garbage on the firmware. This
+     * is the only way to read the scale with TESTBOARD=0. */
+    unsigned      scale_pct = (unsigned)(workout_ctrl_scale() * 100.0f + 0.5f);
     /* Sized for the longest possible reply: an escaped name, the build stamp,
      * and every counter saturated. snprintf would truncate rather than
      * overflow, but a truncated reply is invalid JSON, which is its own bug. */
-    char buf[320];
+    char buf[352];
     if (!conn || !dev) {
         snprintf(buf, sizeof buf,
                  "{\"cmd\":\"status\",\"connected\":false,"
                  "\"build\":\"%s\",\"tx_drops\":%lu,"
-                 "\"p70\":%lu,\"p70_rej\":%lu,\"p70_pg\":%u}",
-                 build, drops, p70, p70_rej, p70_pg);
+                 "\"p70\":%lu,\"p70_rej\":%lu,\"p70_pg\":%u,"
+                 "\"scale\":%u}",
+                 build, drops, p70, p70_rej, p70_pg, scale_pct);
     } else {
         char name[FTMS_NAME_LEN * 2];
         json_escape(name, sizeof name, dev->name);
         snprintf(buf, sizeof buf,
                  "{\"cmd\":\"status\",\"connected\":true,\"name\":\"%s\","
                  "\"build\":\"%s\",\"tx_drops\":%lu,"
-                 "\"p70\":%lu,\"p70_rej\":%lu,\"p70_pg\":%u}",
-                 name, build, drops, p70, p70_rej, p70_pg);
+                 "\"p70\":%lu,\"p70_rej\":%lu,\"p70_pg\":%u,"
+                 "\"scale\":%u}",
+                 name, build, drops, p70, p70_rej, p70_pg, scale_pct);
     }
     tx(buf, ctx);
 }

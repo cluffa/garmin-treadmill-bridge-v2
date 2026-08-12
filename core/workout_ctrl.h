@@ -11,7 +11,31 @@
  *   - re-assert it on a slow keepalive in case a write was lost,
  *   - stop the belt when the activity is paused/stopped,
  *   - drop the belt to a walk on interval rest steps that carry no speed
- *     target of their own (they arrive with an OPEN target).
+ *     target of their own (they arrive with an OPEN target),
+ *   - scale the whole workout's difficulty from a single speed adjustment
+ *     the user makes on any one interval (see below).
+ *
+ * ---- Difficulty scaling ----------------------------------------------------
+ *
+ * Every workout-derived target is multiplied by a scale factor before being
+ * commanded:  commanded = base * scale.  `base` is the *unscaled* target the
+ * step decodes to, which is what makes repeated adjustments compound: drop a
+ * 6 km/h interval to 5.4 and scale becomes 0.90, so the next 7 km/h interval
+ * runs at 6.3; drop that to 5.67 and scale becomes 5.67/7.0 = 0.81.
+ *
+ * The scale is learned from the adjustment the user already makes — there is
+ * no new input on the board or the watch:
+ *   - the treadmill's own speed buttons, seen as the belt diverging from what
+ *     we commanded (fed in by workout_ctrl_note_belt), or
+ *   - an explicit SPEED from the ctrl app (workout_ctrl_note_manual).
+ * Either way scale = observed / base. A ratio outside [0.5, 1.5] is discarded
+ * rather than clamped — a pulled safety key reads as ~0 km/h, and clamping
+ * that to 0.5 would restart the next interval at half pace unasked.
+ *
+ * Scale resets to 1.0 on TIMER_STATE_OFF (a fresh, not-yet-started activity)
+ * and at boot. It deliberately does NOT reset in workout_ctrl_reset(): that
+ * fires on watch disconnect, and losing the user's adjustment to a transient
+ * BLE drop mid-run is worse than any staleness it would avoid.
  *
  * Platform-agnostic: depends only on machine.h (no SoftDevice / nRF / ESP
  * includes), so both the nRF52840 and ESP32 control services share it. Each
@@ -59,8 +83,34 @@ void workout_ctrl_on_frame(const uint8_t *data, uint16_t len);
 void workout_ctrl_tick(void);
 
 /* Drop any latched command (e.g. on watch disconnect) so the keepalive stops
- * re-asserting a stale target. */
+ * re-asserting a stale target. Does NOT reset the difficulty scale — see the
+ * header comment. */
 void workout_ctrl_reset(void);
+
+/* Feed the actual belt speed, in km/h, at roughly 1 Hz while a treadmill is
+ * connected. This is how a speed change made on the treadmill's own console
+ * becomes a difficulty adjustment: once the belt has been seen to *reach* the
+ * commanded speed, a sustained divergence from it is adopted as the new scale.
+ *
+ * Arming on reach rather than on a settling timer is deliberate. A fixed
+ * post-command blackout cannot cover both a 0.2 km/h nudge and a 4->12 km/h
+ * ramp, and arming on reach also means a treadmill whose ceiling is below the
+ * authored target never arms — hardware limits are never mistaken for a user
+ * adjustment.
+ *
+ * Safe to call when nothing is latched; it is a no-op then. Callers should
+ * skip it while the treadmill link is down rather than feeding a stale
+ * reading. */
+void workout_ctrl_note_belt(float kmh);
+
+/* Current difficulty scale: 1.0 = run the workout exactly as authored, 0.9 =
+ * every target 10% slower. Always within [0.5, 1.5]. */
+float workout_ctrl_scale(void);
+
+/* The unscaled target of the latched workout step, in km/h; 0.0 when no step
+ * target is latched (free run, or nothing received yet). Reported for
+ * display/telemetry — the commanded speed is this times the scale. */
+float workout_ctrl_base_kmh(void);
 
 /* Action kinds for workout_ctrl_note_manual. These are this header's own
  * public constants — workout_ctrl.c translates them to the internal

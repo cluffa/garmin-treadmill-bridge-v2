@@ -235,6 +235,133 @@ int main(void)
     assert(g_speed_calls == 1);
     assert(g_last_speed > 6.9f && g_last_speed < 7.1f);
 
+    /* ---- difficulty scaling ------------------------------------------------
+     *
+     * One adjustment on one interval scales every later interval. Each block
+     * begins with a TIMER_OFF frame, which is the only thing that resets the
+     * scale (workout_ctrl_reset deliberately does not — see workout_ctrl.h).
+     */
+
+    /* A manual SPEED override learns the ratio, and the NEXT step is scaled. */
+    reset_counts();
+    workout_ctrl_reset();
+    frame(f, TIMER_OFF, false, TGT_OPEN, 0, 0);
+    workout_ctrl_on_frame(f, sizeof f);
+    assert(workout_ctrl_scale() > 0.99f && workout_ctrl_scale() < 1.01f);
+
+    frame(f, TIMER_ON, true, TGT_SPEED, 1667, 1667);   /* 6.0 km/h */
+    workout_ctrl_on_frame(f, sizeof f);
+    assert(g_last_speed > 5.9f && g_last_speed < 6.1f);
+    assert(workout_ctrl_base_kmh() > 5.9f && workout_ctrl_base_kmh() < 6.1f);
+
+    /* User drops it 10%, to 5.4. */
+    workout_ctrl_note_manual(WORKOUT_CTRL_ACT_SPEED, 5.4f);
+    assert(workout_ctrl_scale() > 0.895f && workout_ctrl_scale() < 0.905f);
+
+    /* Next interval is authored at 7.0 → must be commanded at 6.3. */
+    reset_counts();
+    frame(f, TIMER_ON, true, TGT_SPEED, 1944, 1944);   /* 7.0 km/h */
+    workout_ctrl_on_frame(f, sizeof f);
+    assert(g_speed_calls == 1);
+    assert(g_last_speed > 6.25f && g_last_speed < 6.35f);
+
+    /* A second adjustment compounds off the AUTHORED value, not the commanded
+     * one: 5.67 / 7.0 = 0.81. */
+    workout_ctrl_note_manual(WORKOUT_CTRL_ACT_SPEED, 5.67f);
+    assert(workout_ctrl_scale() > 0.805f && workout_ctrl_scale() < 0.815f);
+
+    /* Rest steps scale too — an easier session eases the walk breaks as well. */
+    reset_counts();
+    frame_i(f, TIMER_ON, false, TGT_OPEN, 0, 0, INT_REST);
+    workout_ctrl_on_frame(f, sizeof f);
+    assert(g_speed_calls == 1);
+    assert(g_last_speed > 3.19f && g_last_speed < 3.29f);   /* 4.0 * 0.81 */
+
+    /* Pause/stop preserve the scale; only TIMER_OFF clears it. */
+    reset_counts();
+    frame(f, TIMER_PAUSED, true, TGT_SPEED, 1944, 1944);
+    workout_ctrl_on_frame(f, sizeof f);
+    assert(workout_ctrl_scale() < 0.9f);
+    workout_ctrl_reset();
+    assert(workout_ctrl_scale() < 0.9f);
+    frame(f, TIMER_OFF, false, TGT_OPEN, 0, 0);
+    workout_ctrl_on_frame(f, sizeof f);
+    assert(workout_ctrl_scale() > 0.99f && workout_ctrl_scale() < 1.01f);
+
+    /* A manual STOP is not a difficulty opinion. */
+    reset_counts();
+    frame(f, TIMER_ON, true, TGT_SPEED, 2778, 2778);   /* 10.0 */
+    workout_ctrl_on_frame(f, sizeof f);
+    workout_ctrl_note_manual(WORKOUT_CTRL_ACT_STOP, 0);
+    assert(workout_ctrl_scale() > 0.99f && workout_ctrl_scale() < 1.01f);
+
+    /* ---- belt-divergence learning (the treadmill's own speed buttons) ---- */
+
+    reset_counts();
+    workout_ctrl_reset();
+    frame(f, TIMER_OFF, false, TGT_OPEN, 0, 0);
+    workout_ctrl_on_frame(f, sizeof f);
+    frame(f, TIMER_ON, true, TGT_SPEED, 2778, 2778);   /* 10.0 km/h */
+    workout_ctrl_on_frame(f, sizeof f);
+    assert(g_last_speed > 9.9f && g_last_speed < 10.1f);
+
+    /* Ramping up: the belt is nowhere near 10 yet, and that must not be read
+     * as an adjustment however long it lasts — the detector is not armed. */
+    for (int i = 0; i < 20; i++) workout_ctrl_note_belt(4.0f + 0.2f * i);
+    assert(workout_ctrl_scale() > 0.99f);
+
+    /* Belt reaches the commanded speed → detector arms. */
+    workout_ctrl_note_belt(10.0f);
+    assert(workout_ctrl_scale() > 0.99f);
+
+    /* User presses speed-down on the console. One sample is not enough. */
+    workout_ctrl_note_belt(9.0f);
+    workout_ctrl_note_belt(9.0f);
+    assert(workout_ctrl_scale() > 0.99f);
+
+    /* Keepalive must not stomp the change while it is mid-confirmation. */
+    reset_counts();
+    for (int i = 0; i < 40; i++) workout_ctrl_tick();
+    assert(g_speed_calls == 0);
+
+    /* Third consecutive sample → adopted: 9.0 / 10.0 = 0.90. */
+    workout_ctrl_note_belt(9.0f);
+    assert(workout_ctrl_scale() > 0.895f && workout_ctrl_scale() < 0.905f);
+
+    /* No command is issued for it (the belt is already there), but the
+     * keepalive now re-asserts the user's 9.0, not the authored 10.0. */
+    assert(g_speed_calls == 0);
+    for (int i = 0; i < 30; i++) workout_ctrl_tick();
+    assert(g_speed_calls == 1);
+    assert(g_last_speed > 8.9f && g_last_speed < 9.1f);
+
+    /* And the next authored interval carries the same 10% cut: 8.0 → 7.2. */
+    reset_counts();
+    frame(f, TIMER_ON, true, TGT_SPEED, 2222, 2222);   /* 8.0 km/h */
+    workout_ctrl_on_frame(f, sizeof f);
+    assert(g_speed_calls == 1);
+    assert(g_last_speed > 7.15f && g_last_speed < 7.25f);
+
+    /* Ordinary tracking error must NOT be learned: 8.0 commanded → 7.2, and a
+     * belt sitting at 7.1 is inside the deadband. */
+    workout_ctrl_note_belt(7.2f);            /* arm */
+    for (int i = 0; i < 10; i++) workout_ctrl_note_belt(7.1f);
+    assert(workout_ctrl_scale() > 0.895f && workout_ctrl_scale() < 0.905f);
+
+    /* THE DANGEROUS ONE: safety key pulled → belt reads ~0. The ratio is out
+     * of band, so it is discarded outright. Clamping it into range would
+     * restart the next interval at half pace with nobody having asked. */
+    for (int i = 0; i < 10; i++) workout_ctrl_note_belt(0.0f);
+    assert(workout_ctrl_scale() > 0.895f && workout_ctrl_scale() < 0.905f);
+    reset_counts();
+    frame(f, TIMER_ON, true, TGT_SPEED, 2778, 2778);   /* 10.0 authored */
+    workout_ctrl_on_frame(f, sizeof f);
+    assert(g_last_speed > 8.9f && g_last_speed < 9.1f);  /* 9.0, not 5.0 */
+
+    /* A belt feed with nothing latched is a no-op, not a crash. */
+    workout_ctrl_reset();
+    workout_ctrl_note_belt(8.0f);
+
     printf("workout_ctrl: OK\n");
     return 0;
 }
