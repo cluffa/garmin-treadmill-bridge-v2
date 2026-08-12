@@ -121,10 +121,12 @@ simultaneous FTMS+iFit connections.
   (`docs/sdm-recording-analysis.md` §12). Keep the page: the byte is correct and
   speed/distance are unharmed.
 - **Page 70 requests are answered** (`core/ant_request.c`), and `STATUS` reports
-  `"p70"` / `"p70_rej"` / `"p70_pg"`. Read `p70` after a re-pair **before**
-  recording another run: zero through a re-pair and a run start means the watch
-  never asks for capabilities, so no page-22 work can fix cadence. A zero is a
-  result, not a broken feature — `docs/sdm-recording-analysis.md` §13.
+  `"p70"` / `"p70_rej"` / `"p70_pg"`. **The watch asks for page 22 by name, at
+  pairing** — observed 2026-08-11 as `"p70":2,"p70_rej":0,"p70_pg":22` after a
+  footpod re-pair, which is why unsolicited broadcasting never worked. Requests
+  arrive at pairing only, so **a re-pair discards the answered state**: don't
+  re-pair while a recording experiment is pending (`docs/sdm-recording-analysis.md`
+  §13.5).
   ⚠ A page-70 response displaces the rotation page for its slot, so responses
   are spread one per four slots and capped; don't remove either without reading
   §13.2, or a request burst reintroduces the speed holes §10a fixed. And the ANT

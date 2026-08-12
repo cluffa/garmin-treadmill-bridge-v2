@@ -31,11 +31,14 @@ meantime — `docs/flashing.md` §8b is the full no-SWD recipe, and it is how th
 
 ## Current state — one line
 
-**2026-08-11: the clock fix holds, page 22 is ruled out on hardware, and page 70
-request handling is flashed and live (`0811-2159 4b5988c`). The next action is a
-re-pair with the console attached, reading `STATUS`'s new `p70` counter — that
-single reading decides whether cadence is fixable at all. It reads 0 right now,
-which means nothing yet: nothing has asked.**
+**2026-08-11: page 70 is flashed (`0811-2159 4b5988c`) and the watch has been
+observed asking for page 22 by name — `"p70":2,"p70_rej":0,"p70_pg":22` after a
+footpod re-pair.** That was the open question and it is answered: the watch reads
+capabilities by *requesting* them at pairing, and until this image we never
+replied. **The next action is a recorded run on this pairing** — do NOT re-pair
+again first, the answered pairing is the one now in place. Success looks like
+`avg_running_cadence` ~80 with `max_running_cadence` non-zero, `avg_power` ~230 W,
+`avg_step_length` ~1100 mm (`docs/sdm-recording-analysis.md` §13.5).
 
 **2026-08-10: the SDM clock fix is confirmed on a recorded run, and a second
 defect of the same class is fixed but NOT yet flashed.**

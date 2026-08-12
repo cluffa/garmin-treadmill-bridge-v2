@@ -618,17 +618,48 @@ descendant, and the `p70` fields are *present at all*, which the previous image
 could not do. The treadmill link came back up by itself after the reboot, so the
 central is unharmed.
 
-Remaining steps, in order:
+### 13.5 The watch asks for page 22, by name, at pairing — 2026-08-11
 
-1. With the console attached, remove the footpod from the watch's sensor list
-   and add it back. Watch `p70`. **This is the decisive step** and it needs no
-   treadmill, no workout and no .FIT.
-2. Start a run and check `p70` again — a watch that asks at run start rather
-   than at pairing is still hypothesis 1.
-3. Only if `p70` moved is a recorded run worth downloading. Then check the §12.1
-   table: `avg_running_cadence` near 80 with `max_running_cadence` non-zero,
-   `avg_power` near 230 W, `avg_step_length` near 1100 mm — and speed/distance
-   unchanged, per §12.3.
+The footpod was removed from the watch's sensor list and re-added with the
+console attached. The board:
 
-The counter reads 0 as flashed, which means nothing yet: nothing has asked. Only
-a 0 that survives step 1 *and* step 2 is evidence.
+```
+{"cmd":"status",…,"build":"0811-2159 4b5988c","tx_drops":0,"p70":2,"p70_rej":0,"p70_pg":22}
+```
+
+**Hypothesis 1 is confirmed and hypothesis 2 is dead.** Two page 70 requests,
+both actionable (`p70_rej` 0 — nothing malformed, nothing we could not build),
+and the page requested was **22**: capabilities, by number.
+
+So the watch does read capabilities. It reads them by *asking, at pairing time*,
+and until this image we never answered. That is the complete explanation for §12:
+broadcasting page 22 unsolicited for 44 minutes changed nothing because the watch
+was not listening for it unsolicited — it had already asked, once, at pairing, and
+got silence. The SDK's SDM master emits page 22 only from its request controller
+(§11); the watch is the matching half of that contract and we were the only party
+not honouring it.
+
+Two smaller things this settles in passing:
+
+- the whole receive path works on first contact with real hardware — request
+  decoded, accepted, page 22 encoded and put on the next TX slot;
+- `p70_rej` 0 means the watch asks only for pages we build, so the supported-page
+  list (1/2/22/80/81) needs no additions.
+
+**What is still unproven is whether answering fixes the recording.** The watch
+now has our capabilities byte; whether it acts on it — falls back to wrist
+cadence and stops recording our zero — is a separate question that only a run
+answers. The remaining step:
+
+1. Record a run on this pairing and check the §12.1 table:
+   `avg_running_cadence` near 80 with `max_running_cadence` non-zero, `avg_power`
+   near 230 W, `avg_step_length` near 1100 mm — and speed/distance unchanged, per
+   §12.3. The wrist values to expect are the ones §12.2 measured directly during
+   the fallback windows: 81 spm, ~373 W, ~1057 mm.
+2. If cadence is *still* zero, the capabilities route is exhausted — the watch
+   asked, we answered, and it ignored the answer. That would be a genuinely new
+   finding and not a variation on §11 or §12.
+
+⚠ **Do not re-pair again before that run.** The requests come at pairing, so the
+answered pairing is the one now in place; re-pairing while investigating anything
+else discards the state the experiment depends on.
