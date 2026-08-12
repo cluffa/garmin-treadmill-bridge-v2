@@ -479,7 +479,9 @@ Two hypotheses survive, and they are now the whole question:
 
 Answering page 70 discriminates between them and is the next lever, exactly as
 §11 said it would be — the difference now is that it is cleanly attributable,
-because the unsolicited-broadcast path has been ruled out on hardware.
+because the unsolicited-broadcast path has been ruled out on hardware. It is
+implemented in §13, and it comes with a counter that answers the question
+without needing a run at all.
 
 ### 12.3 Speed and distance survived — the regression check passes
 
@@ -517,3 +519,104 @@ The 30 flagged dropouts are 28 single missing records (RF loss, §10a — phase
 concentration 0.281, not clustered on the page schedule) plus two genuine belt
 events: the 6 s start ramp, and 4 s at 0.886 km/h at t=2049 where the belt was
 still spinning up after the pause.
+
+## 13. The footpod now answers page 70 requests — 2026-08-11
+
+§12 left two explanations and named answering common page 70 as the lever that
+separates them. This is that lever, plus a counter that settles the question
+*before* the next run instead of after it.
+
+`core/ant_request.c` (pure, `test/host/test_ant_request.c`) decodes a received
+page 70 and decides which page goes on which TX slot; `firmware/ant_sdm.c` does
+the radio half. Layout and accept/reject rules are taken from the SDK's own
+sensor-side implementation, which is on the build machine:
+
+```
+$SDK_ROOT/components/ant/ant_profiles/ant_common/pages/ant_common_page_70.c
+$SDK_ROOT/components/ant/ant_profiles/ant_common/ant_request_controller/
+```
+
+### 13.1 The counter is the experiment
+
+`STATUS` now reports three fields:
+
+```
+{"cmd":"status",…,"tx_drops":0,"p70":0,"p70_rej":0,"p70_pg":0}
+```
+
+`p70` counts page 70s accepted, `p70_rej` those understood but not actionable,
+`p70_pg` the page number the last accepted request asked for. Cumulative per
+boot — `ant_sdm_start()` is called once from `main()`, so a treadmill reconnect
+does not reset them.
+
+**This is why they exist.** §12's two hypotheses are indistinguishable in a
+.FIT, and one of them means no capabilities work can ever fix cadence. They are
+trivially distinguishable here:
+
+| after DFU, re-pair the footpod with the console attached | reading |
+|---|---|
+| `p70` increments | the watch **does** ask. Hypothesis 1 was right, we are now answering, and the next recorded run is decisive. |
+| `p70` stays 0 through a re-pair *and* a run start | the watch **never** asks. Hypothesis 2 gains hard, page 22 cannot be delivered by any route, and cadence is not fixable from the capabilities side. |
+| `p70_rej` non-zero with `p70` 0 | it asks for a page we do not build — read `p70_pg` and decide whether to add it. |
+
+A zero counter is therefore a *result*, not a broken feature. Read it before
+concluding anything about the run.
+
+### 13.2 What it sends, and the invariant it bends
+
+A request is acted on only if the command type is `0x01` (data page request),
+the transmission-response byte is not `0x00`, and the requested page is one the
+footpod actually builds — 1, 2, 22, 80 or 81. Anything else increments
+`p70_rej` and is otherwise ignored, which is what the profile asks for: better
+no answer than a wrong one. Bit 7 of the response byte selects acknowledged
+messages, and the exact value `0x80` means "until acknowledged".
+
+The first response goes out on the **very next** TX slot. A request satisfied
+16 s later would be worth no more than the unsolicited rotation §12 already
+disproved.
+
+⚠ **A response displaces the rotation page for its slot**, which touches the
+interleave invariant §10a depends on — at least three of any four consecutive
+slots must be page 1, or the watch records a second with no speed. Two things
+bound it:
+
+- responses are spread **one per four slots**, so a one-second window holds at
+  most one response plus at most one rotation background page. The guarantee
+  degrades from three page 1s to two, never to zero.
+- both modes are **capped** — 16 explicit transmissions, 8 until-acknowledged.
+  The SDK caps neither, because the SDK has no interleave invariant to protect;
+  this is a deliberate divergence.
+
+The rotation *resumes* rather than skipping ahead, so no background page is ever
+dropped — the pattern just shifts a slot later.
+
+### 13.3 The event-pump change is the risky part
+
+`ant_evt_handler()` used to pump the broadcast from `EVENT_TX` alone. An
+acknowledged response completes as `EVENT_TRANSFER_TX_COMPLETED` or `_FAILED`
+**instead of** `EVENT_TX`, so that handler would have stopped feeding the channel
+the moment it answered its first acknowledged request, leaving the radio
+retransmitting one stale page for the rest of the run. It now pumps on all
+three, exactly as the SDK's `ant_sdm_sens_evt_handler()` does. Each slot yields
+exactly one of the three, so this is still one pump per slot and the footpod
+clock's RTC differencing is unaffected.
+
+### 13.4 How to verify
+
+Not verifiable on this machine. `make host-test` and `make firmware` pass; the
+map file confirms the three `ctrl_sdm_p70_*` symbols resolve to `ant_sdm.c.o`
+rather than core's weak zeros, so `STATUS` is reading the real counters.
+
+On hardware, in order:
+
+1. DFU the image, then **read the build stamp back** off `STATUS` — the board is
+   the authority, and a DFU that did not take looks identical to one that did.
+2. With the console attached, remove the footpod from the watch's sensor list
+   and add it back. Watch `p70`. This is the decisive step and it needs no
+   treadmill, no workout and no .FIT.
+3. Start a run and check `p70` again — a watch that asks at run start rather
+   than at pairing is still hypothesis 1.
+4. Only if `p70` moved is a recorded run worth downloading. Then check the §12.1
+   table: `avg_running_cadence` near 80 with `max_running_cadence` non-zero,
+   `avg_power` near 230 W, `avg_step_length` near 1100 mm — and speed/distance
+   unchanged, per §12.3.

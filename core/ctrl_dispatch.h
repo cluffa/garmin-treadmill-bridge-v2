@@ -46,6 +46,25 @@ uint32_t ctrl_console_drops(void);
  * ctrl_console_drops() above, and for the same reason: core cannot know it. */
 const char *ctrl_build_stamp(void);
 
+/* ANT+ common page 70 request traffic on the footpod channel, reported by
+ * STATUS as "p70" (requests accepted), "p70_rej" (page 70s we could not act
+ * on), and "p70_pg" (the page the last accepted request asked for).
+ *
+ * This is an experiment readout, not telemetry. docs/sdm-recording-analysis.md
+ * §12 leaves exactly two explanations for the watch recording a zero cadence
+ * from us: it learns capabilities only by *asking* with page 70, or it ignores
+ * capabilities entirely. Those look identical in a .FIT. They do not look
+ * identical here — re-pair the footpod with the console attached and read the
+ * counter. Zero through a re-pair and a run start means the watch never asks,
+ * and no amount of capabilities work can fix cadence.
+ *
+ * Weakly defined in core as 0, like the two above: core has no radio. The
+ * platform overrides them — on nRF5 that is firmware/ant_sdm.c, which owns the
+ * ant_request_t these read. */
+uint32_t ctrl_sdm_p70_requests(void);
+uint32_t ctrl_sdm_p70_rejects(void);
+uint8_t  ctrl_sdm_p70_last_page(void);
+
 /* Parse and execute one ASCII command line.
  * `tx` is called zero or more times with JSON response strings (no trailing \n).
  * Thread-safe: individual commands are atomic against concurrent dispatches

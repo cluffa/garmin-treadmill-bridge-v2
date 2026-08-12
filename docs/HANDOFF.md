@@ -31,8 +31,10 @@ meantime — `docs/flashing.md` §8b is the full no-SWD recipe, and it is how th
 
 ## Current state — one line
 
-**2026-08-11: the clock fix holds, and the cadence lever (page 22) is now ruled
-out on hardware — page 70 request handling is next.**
+**2026-08-11: the clock fix holds, page 22 is ruled out on hardware, and page 70
+request handling is written but NOT yet flashed. The next action is a re-pair
+with the console attached, reading `STATUS`'s new `p70` counter — that single
+reading decides whether cadence is fixable at all.**
 
 **2026-08-10: the SDM clock fix is confirmed on a recorded run, and a second
 defect of the same class is fixed but NOT yet flashed.**
@@ -40,6 +42,23 @@ defect of the same class is fixed but NOT yet flashed.**
 `total_distance` 4850.39 and `enhanced_avg_speed` 2.825, against 0.0 and absent
 on every lap of the pre-fix run. Cadence is still flat, exactly as predicted;
 page 22 is still the open lever.
+
+**2026-08-11 (latest): the footpod answers page 70, and STATUS says whether the
+watch ever asks.** `core/ant_request.c` + `firmware/ant_sdm.c` decode a common
+page 70 request and put the requested page (1/2/22/80/81) on the next TX slot,
+acknowledged or broadcast as asked, spread one per four slots and capped so the
+speed-hole interleave degrades to two page 1s per second instead of zero.
+`make host-test` and `make firmware` pass; **unflashed.**
+
+The diagnostic matters more than the feature. `STATUS` now ends
+`…,"p70":0,"p70_rej":0,"p70_pg":0` — requests accepted, requests we could not
+act on, and the page the last one asked for, cumulative per boot. **Next action:
+DFU, verify the build stamp, then re-pair the footpod with the console attached
+and read `p70`.** If it increments, the watch asks and a recorded run is now
+decisive. If it stays 0 through a re-pair *and* a run start, the watch never
+asks, page 22 cannot reach it by any route, and cadence is not fixable from the
+capabilities side at all. A zero is a result, not a bug —
+`docs/sdm-recording-analysis.md` §13.4 is the ordered procedure.
 
 **2026-08-11 (later): page 22 is verified NOT to work.** `23943114012_ACTIVITY.fit`
 — re-paired footpod, board self-reporting `0811-1727 110d0a2` (descends from the

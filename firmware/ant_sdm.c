@@ -2,6 +2,8 @@
 #include "ant_network_key.h"
 #include "app_state.h"
 #include "ant_sdm_encode.h"
+#include "ant_request.h"
+#include "ctrl_dispatch.h"
 #include "sdm_broadcast.h"
 
 #include "ant_interface.h"
@@ -51,6 +53,15 @@
  * background page and at least three are page 1. That holds across the wrap
  * ({63,0,1,2}) too. Adding a background page at any other residue would put
  * two of them in some one-second window and reintroduce the speed holes.
+ *
+ * One thing does bend this, deliberately and briefly: answering a page 70
+ * request (core/ant_request.c) displaces the rotation page for that slot, and
+ * the rotation resumes rather than skipping ahead. Responses are spread one per
+ * ANT_REQUEST_SPREAD slots and capped, so during a burst a one-second window
+ * holds at most one response plus at most one rotation background page —
+ * degrading the guarantee from three page 1s to two, never to zero. A request
+ * arrives at pairing, not mid-interval, and two page 1s per window is still one
+ * speed sample per record.
  */
 #define CYCLE_LEN     64
 #define P22_SLOT       7
@@ -96,18 +107,52 @@ static const uint8_t PAGE_81[8] = {0x51,0xFF,0xFF,0x01,0xFF,0xFF,0xFF,0xFF};
  * Bytes 2-7 are the page's reserved field: the same SDK header's encoder
  * (ant_sdm_page_22.c) memsets all six to UINT8_MAX.
  *
- * ⚠ Sent unsolicited, on a slot in the rotation. The SDK's own SDM *master*
- * only emits page 22 in reply to a page-70 request from the display
- * (next_page_number_get() takes it from the request controller and never from
- * the periodic rotation), which we do not implement — the channel is TX-only.
- * The SDK *display* side decodes page 22 whenever it arrives, with no
- * request-matching, so an unsolicited broadcast is processed. Broadcasting
- * also reaches a watch that is already paired, which a request handler would
- * not if the watch only asks at pairing time. If the next recorded run still
- * shows zero cadence, answering page 70 is the next lever. */
+ * ⚠ Sent unsolicited on a slot in the rotation, AND on request. The SDK's own
+ * SDM *master* only emits page 22 in reply to a page-70 request from the
+ * display (next_page_number_get() takes it from the request controller and
+ * never from the periodic rotation). The unsolicited broadcast came first
+ * because the SDK *display* side decodes page 22 whenever it arrives, with no
+ * request-matching, and because a broadcast reaches a watch that is already
+ * paired while a request handler only helps if the watch actually asks.
+ *
+ * That was tried alone and did not work: 23943114012_ACTIVITY.fit, recorded
+ * 2026-08-11 on a re-paired footpod with this page on air every 16 s, still
+ * shows avg_running_cadence 252 and max 0 — and shows the watch using correct
+ * wrist cadence for 41 s after a belt spin-up before reverting to our zero.
+ * docs/sdm-recording-analysis.md §12. So the request path is now implemented
+ * too (core/ant_request.c), which is the remaining explanation: a display that
+ * learns capabilities only by asking. STATUS reports whether it ever asks. */
 static const uint8_t PAGE_22[8] = {0x16,0x07,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 
 static uint8_t s_slot;    /* position in the CYCLE_LEN pattern */
+
+/* Page-70 request state — see core/ant_request.h. */
+static ant_request_t s_req;
+
+/* Which page the rotation wants on this slot. */
+static uint8_t rotation_page(uint8_t slot)
+{
+    if (slot == P80_SLOT)                        return 80;
+    if (slot == P81_SLOT)                        return 81;
+    if (slot == P22_SLOT)                        return 22;
+    if (slot == P2_SLOT_A || slot == P2_SLOT_B)  return 2;
+    return 1;
+}
+
+/* Build a page by number. Kept keyed on the number rather than the slot so the
+ * rotation and a page-70 response go through the same encoder — a requested
+ * page that disagreed with the broadcast one would be its own bug. */
+static void build_page(uint8_t page_no, const treadmill_state_t *ts,
+                       uint8_t pg[8])
+{
+    switch (page_no) {
+        case 80: memcpy(pg, PAGE_80, 8);     break;
+        case 81: memcpy(pg, PAGE_81, 8);     break;
+        case 22: memcpy(pg, PAGE_22, 8);     break;
+        case 2:  ant_sdm_encode_page2(ts, pg); break;
+        default: ant_sdm_encode_page1(ts, pg); break;
+    }
+}
 
 /* ---- The footpod's own clock -------------------------------------------------
  *
@@ -166,8 +211,42 @@ static void ant_evt_handler(ant_evt_t *p_evt, void *p_context)
     if (p_evt->channel != SDM_CHANNEL) {
         return;
     }
-    if (p_evt->event == EVENT_TX) {
+
+    switch (p_evt->event) {
+    case EVENT_RX:
+        /* A master channel receives whatever the display sends it. The only
+         * thing we act on is a page 70 request; ant_request_on_rx() ignores
+         * everything else without counting it. */
+        if (ant_request_on_rx(&s_req, p_evt->message.ANT_MESSAGE_aucPayload,
+                              ANT_STANDARD_DATA_PAYLOAD_SIZE)) {
+            NRF_LOG_INFO("ant_sdm page 70: page %u requested",
+                         s_req.last_page);
+        }
+        break;
+
+    /* Every one of these is one TX slot elapsing, and exactly one of them
+     * arrives per slot. Pumping on all three is not optional: an acknowledged
+     * response completes as EVENT_TRANSFER_TX_COMPLETED or _FAILED *instead of*
+     * EVENT_TX, so a handler that only watched EVENT_TX would stop feeding the
+     * channel the moment it answered its first request, and the radio would sit
+     * there retransmitting one stale page forever. The SDK's own
+     * ant_sdm_sens_evt_handler() takes all three for the same reason. */
+    case EVENT_TRANSFER_TX_COMPLETED:
+        ant_request_on_response_ack(&s_req, true);
         ant_sdm_on_tx_event();
+        break;
+
+    case EVENT_TRANSFER_TX_FAILED:
+        ant_request_on_response_ack(&s_req, false);
+        ant_sdm_on_tx_event();
+        break;
+
+    case EVENT_TX:
+        ant_sdm_on_tx_event();
+        break;
+
+    default:
+        break;
     }
 }
 
@@ -247,22 +326,30 @@ void ant_sdm_on_tx_event(void)
 
     const treadmill_state_t *ts = &ts_bcast;
 
-    if (s_slot == P80_SLOT) {
-        memcpy(pg, PAGE_80, sizeof(pg));
-    } else if (s_slot == P81_SLOT) {
-        memcpy(pg, PAGE_81, sizeof(pg));
-    } else if (s_slot == P22_SLOT) {
-        memcpy(pg, PAGE_22, sizeof(pg));
-    } else if (s_slot == P2_SLOT_A || s_slot == P2_SLOT_B) {
-        ant_sdm_encode_page2(ts, pg);
-    } else {
-        ant_sdm_encode_page1(ts, pg);
+    /* A page-70 response takes the slot from the rotation, which then resumes
+     * where it left off rather than skipping the page it was owed — the
+     * background pages stay in their pattern, just one slot later. */
+    uint8_t page_no;
+    bool    ack        = false;
+    bool    responding = ant_request_take_slot(&s_req, &page_no, &ack);
+    if (!responding) {
+        page_no = rotation_page(s_slot);
+        s_slot  = (uint8_t)((s_slot + 1) % CYCLE_LEN);
     }
-    s_slot = (uint8_t)((s_slot + 1) % CYCLE_LEN);
 
-    uint32_t err = sd_ant_broadcast_message_tx(SDM_CHANNEL, sizeof(pg), pg);
+    build_page(page_no, ts, pg);
+
+    uint32_t err = ack
+        ? sd_ant_acknowledge_message_tx(SDM_CHANNEL, sizeof(pg), pg)
+        : sd_ant_broadcast_message_tx(SDM_CHANNEL, sizeof(pg), pg);
     if (err != NRF_SUCCESS) {
         NRF_LOG_WARNING("ant_sdm tx err %u", err);
+        /* Nothing reached the air, so a refused response is still owed. Never
+         * APP_ERROR_CHECK here: a footpod that resets because one page did not
+         * go out is worse than one that misses a page. */
+        if (responding) {
+            ant_request_retry_slot(&s_req);
+        }
     }
 }
 
@@ -300,6 +387,10 @@ void ant_sdm_start(void)
     s_clock_run = false;
     sdm_broadcast_init(&s_bcast);
 
+    /* Called once, from main(), so the page-70 counters STATUS reports are
+     * per-boot and not silently reset by a treadmill reconnect. */
+    ant_request_init(&s_req);
+
     /* Prime and send the first broadcast page, then open the channel.
      * Subsequent pages go out from EVENT_TX. */
     ant_sdm_on_tx_event();
@@ -308,3 +399,14 @@ void ant_sdm_start(void)
     app_state()->ant_broadcasting = true;
     NRF_LOG_INFO("ant_sdm broadcasting");
 }
+
+/* ---- STATUS readout --------------------------------------------------------
+ *
+ * Strong overrides of core's weak page-70 accessors, so the console can answer
+ * "does the watch ever ask us for a page?" — the one question that separates the
+ * two surviving explanations for the zero-cadence recordings, and the one a
+ * .FIT cannot answer. See core/ctrl_dispatch.h and
+ * docs/sdm-recording-analysis.md §12. */
+uint32_t ctrl_sdm_p70_requests(void)  { return s_req.requests; }
+uint32_t ctrl_sdm_p70_rejects(void)   { return s_req.rejects; }
+uint8_t  ctrl_sdm_p70_last_page(void) { return s_req.last_page; }

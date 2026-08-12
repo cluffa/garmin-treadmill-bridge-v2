@@ -128,6 +128,23 @@ __attribute__((weak)) const char *ctrl_build_stamp(void)
     return "unknown";
 }
 
+/* Platforms with no ANT radio see no requests — see ctrl_dispatch.h.
+ * Firmware overrides all three from firmware/ant_sdm.c. */
+__attribute__((weak)) uint32_t ctrl_sdm_p70_requests(void)
+{
+    return 0;
+}
+
+__attribute__((weak)) uint32_t ctrl_sdm_p70_rejects(void)
+{
+    return 0;
+}
+
+__attribute__((weak)) uint8_t ctrl_sdm_p70_last_page(void)
+{
+    return 0;
+}
+
 static void cmd_status(ctrl_tx_fn tx, void *ctx)
 {
     bool conn = machine_connected();
@@ -142,19 +159,31 @@ static void cmd_status(ctrl_tx_fn tx, void *ctx)
      * has to be answerable without a treadmill in the room. Emitted unescaped —
      * ctrl_dispatch.h makes ASCII-safety a contract on the implementation. */
     const char *build = ctrl_build_stamp();
-    char buf[256];
+    /* Reported unconditionally for a third reason: the question these answer —
+     * does the watch ever ask us for a page? — is about the ANT channel, which
+     * has nothing to do with whether a treadmill is connected. You read them
+     * with a watch in the room and no belt. */
+    unsigned long p70     = (unsigned long)ctrl_sdm_p70_requests();
+    unsigned long p70_rej = (unsigned long)ctrl_sdm_p70_rejects();
+    unsigned      p70_pg  = (unsigned)ctrl_sdm_p70_last_page();
+    /* Sized for the longest possible reply: an escaped name, the build stamp,
+     * and every counter saturated. snprintf would truncate rather than
+     * overflow, but a truncated reply is invalid JSON, which is its own bug. */
+    char buf[320];
     if (!conn || !dev) {
         snprintf(buf, sizeof buf,
                  "{\"cmd\":\"status\",\"connected\":false,"
-                 "\"build\":\"%s\",\"tx_drops\":%lu}",
-                 build, drops);
+                 "\"build\":\"%s\",\"tx_drops\":%lu,"
+                 "\"p70\":%lu,\"p70_rej\":%lu,\"p70_pg\":%u}",
+                 build, drops, p70, p70_rej, p70_pg);
     } else {
         char name[FTMS_NAME_LEN * 2];
         json_escape(name, sizeof name, dev->name);
         snprintf(buf, sizeof buf,
                  "{\"cmd\":\"status\",\"connected\":true,\"name\":\"%s\","
-                 "\"build\":\"%s\",\"tx_drops\":%lu}",
-                 name, build, drops);
+                 "\"build\":\"%s\",\"tx_drops\":%lu,"
+                 "\"p70\":%lu,\"p70_rej\":%lu,\"p70_pg\":%u}",
+                 name, build, drops, p70, p70_rej, p70_pg);
     }
     tx(buf, ctx);
 }

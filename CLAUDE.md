@@ -119,7 +119,18 @@ simultaneous FTMS+iFit connections.
   page 22 is flashed and **verified not to fix cadence** — the recording still
   shows `avg_running_cadence` 252 / `max` 0 on a re-paired footpod
   (`docs/sdm-recording-analysis.md` §12). Keep the page: the byte is correct and
-  speed/distance are unharmed. The next lever is answering common page 70.
+  speed/distance are unharmed.
+- **Page 70 requests are answered** (`core/ant_request.c`), and `STATUS` reports
+  `"p70"` / `"p70_rej"` / `"p70_pg"`. Read `p70` after a re-pair **before**
+  recording another run: zero through a re-pair and a run start means the watch
+  never asks for capabilities, so no page-22 work can fix cadence. A zero is a
+  result, not a broken feature — `docs/sdm-recording-analysis.md` §13.
+  ⚠ A page-70 response displaces the rotation page for its slot, so responses
+  are spread one per four slots and capped; don't remove either without reading
+  §13.2, or a request burst reintroduces the speed holes §10a fixed. And the ANT
+  event handler must keep pumping on `EVENT_TRANSFER_TX_COMPLETED`/`_FAILED` as
+  well as `EVENT_TX` — an acknowledged response replaces `EVENT_TX`, so dropping
+  those two stalls the whole broadcast (§13.3).
 
 ## Secrets (never committed)
 

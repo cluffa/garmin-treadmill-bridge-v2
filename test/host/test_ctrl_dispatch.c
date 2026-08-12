@@ -94,6 +94,14 @@ int main(void) {
         assert(*p != '\\' && isprint((unsigned char)*p));
     }
 
+    /* STATUS must also carry the page-70 counters. They are how you tell "the
+     * watch asks for capabilities and we never answered" from "the watch never
+     * asks" — two explanations that look identical in a recorded .FIT, and only
+     * one of which any firmware change can fix. Core links the weak zeros. */
+    assert(strstr(g_out, "\"p70\":0"));
+    assert(strstr(g_out, "\"p70_rej\":0"));
+    assert(strstr(g_out, "\"p70_pg\":0"));
+
     /* device name with a quote must be escaped so the JSON stays valid */
     g_ndev = 1;
     memset(&g_devs[0], 0, sizeof g_devs[0]);
