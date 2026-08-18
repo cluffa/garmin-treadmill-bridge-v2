@@ -663,3 +663,50 @@ answers. The remaining step:
 ⚠ **Do not re-pair again before that run.** The requests come at pairing, so the
 answered pairing is the one now in place; re-pairing while investigating anything
 else discards the state the experiment depends on.
+
+---
+
+# 14. The signature predates every fix — 2026-08-18
+
+Asked directly: *was cadence already broken before page 22?* Yes — by ten days
+and four recordings. Measured from the .FITs themselves rather than from the
+changelog, with `tools/cadence_history.py`:
+
+| recording | ANT+ sensor the watch saw | avg | max | records with cadence 0 |
+|---|---|---|---|---|
+| 2026-06-04 `23133263148` (outdoor run) | **none** | 75 | 90 | 112 / 3509 |
+| 2026-08-01 `23806153959` | development/SDM (us) | — | — | 309 / 309 |
+| 2026-08-03 `23842067586` | development/SDM | 0 | 0 | 304 / 304 |
+| 2026-08-04 `23842755992` | development/SDM | 234 | 0 | 323 / 325 |
+| 2026-08-04 `23842851505` | development/SDM | 0 | 0 | 302 / 302 |
+| 2026-08-10 `23928343294` | development/SDM | 253 | 0 | 1695 / 1719 |
+| 2026-08-11 `23943114012` | development/SDM | 252 | 0 | 2365 / 2406 |
+| 2026-08-18 `24029215957` | **north_pole_engineering/SDM** | 75 | 83 | 54 / 3613 |
+| 2026-08-18 fenix 6X | development/SDM | 253 | 0 | 276 / 276 |
+
+Against `git log firmware/ant_sdm.c`:
+
+- `d5782ac` **2026-07-31** — cadence marked invalid `0xFF`/`0xF` instead of a
+  valid `0x00`. Every broken run in the table is *after* this, so the invalid
+  encoding was already in place for all of them (§7 predicted this would fix it;
+  it did not).
+- `03fa74b` **2026-08-11** — capabilities page 22. Four broken runs precede it
+  (Aug 1, 3, 4, 4, 10). Immediately before it: avg 253. Immediately after:
+  avg 252. Today, with page 22 and page 70 both live: avg 253.
+- `21e41f8` **2026-08-11** — page 70 responses. Same: no movement.
+
+So neither §11 nor §13 changed the outcome, and neither could have *caused* it.
+The single variable that moves the number is **which SDM sensor the watch is
+paired to**: ours produces 253/max 0 in every run since the footpod first went
+on air, and a real one (the NPE Runn, same belt, same hour) produces 75/83.
+
+That is consistent with — and independently confirms — the control in
+`docs/ant-logging.md`: the watch's recorded cadence tracked the Runn's
+*broadcast page 2 cadence field* to 95.4 % of samples. The watch reads that
+field. It reads ours too. Ours has never contained anything usable, from the
+first run onward, and no page we have added since changes what is in it.
+
+The one control the table is missing is a *treadmill* run with no footpod
+paired at all; 2026-06-04 is an outdoor run, so it shows only that the wrist
+sensor itself is fine. §12.2's in-run fallback windows — 81 spm measured while
+the watch was ignoring us — cover that gap from the other direction.

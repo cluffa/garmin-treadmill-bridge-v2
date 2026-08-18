@@ -129,11 +129,97 @@ pin matters for the hole/phase attribution, which is not gated.
   sends a real clock and that demonstrably repaired lap distance (§8). Sending
   more truthful data than the profile minimum is not a defect.
 
-## The experiment this sensor now makes possible
+## The control experiment — run 2026-08-18, and it answered the question
 
 The open bridge issue is cadence: recordings show `avg_running_cadence` 252 with
 `max` 0, and three separate attempts (invalid encoding, page 22, page 70
-responses) have failed to fix it. Device 19316 is a *control*: pair the watch to
-it directly for one run. If that recording carries correct cadence, it proves
-the watch consumes page 2's cadence field, and that our `0xFF` is what lands as
-the 252/0 garbage — which turns the next change from a guess into a decision.
+responses) failed to fix it. Two explanations survived — the watch consumes
+page 2's cadence field, or it ignores capabilities and derives cadence some
+other way — and a .FIT recorded from our own footpod cannot tell them apart.
+
+The control: a fenix 8 recorded the real sensor (device 19316) for the whole
+run, while the bridge sniffed the same sensor off the air. Same sensor, same
+belt, same hour, one recording made by a watch and one by us.
+
+    tools/compare_sdm_traces.py REF.fit --antlog logs/antlog-*.jsonl
+
+Result (fenix 8 activity 24029215957 vs `antlog-20260818T180410.jsonl`, 2308 s
+of overlap):
+
+| | recorded by the watch | broadcast on the air |
+|---|---|---|
+| cadence, mean | 76.107 spm | 75.757 spm |
+| cadence, samples within 0.5 spm | **95.4 %** (1594/1671, at a 1 s offset) | |
+| speed, mean | 2.853 m/s | 2.859 m/s |
+| speed, RMSE | **0.013 m/s** at the same offset | |
+
+The one-second offset is the watch recording the last page it received, and it
+applies to speed and cadence alike. At that offset the recorded cadence *is* the
+broadcast cadence, sample for sample.
+
+**So the watch reads page 2's cadence field, and our `0xFF` is what lands in a
+recording as the 252 / max-0 garbage.** The sensor's own FIT confirms the
+identity end to end: `device_info` names `north_pole_engineering` with a serial
+number identical to the one the sniffer decoded out of that sensor's own common
+page 81 — the recording and the air trace are the same physical sensor, not two
+plausible ones. (The literal serial is deliberately not reproduced here, for the
+same reason the .FITs are untracked.)
+
+## Both watches, one belt — 2026-08-18
+
+The other half of the same run: a fenix 6X recorded **our** footpod while the
+fenix 8 recorded the Runn. 2032 s of genuine overlap.
+
+    tools/compare_sdm_traces.py REF.fit BRIDGE.fit
+
+| over the common window | fenix 8 / Runn | fenix 6X / bridge |
+|---|---|---|
+| speed, mean | 2.857 m/s | 2.817 m/s — **−1.40 %** |
+| distance, summed | 5181.8 m | 5109.9 m — **−1.39 %** |
+| cadence, mean | 76.5 spm | **0.0 spm, in all 260 samples** |
+| session cadence | avg 75 / max 83 / 4680 strides | **avg 253 / max 0** / 2361 strides |
+| self-consistency | 1.0001 | 1.0020 |
+
+Three things worth keeping:
+
+- **The speed and distance deficits agree to 0.01 %.** That is the signature of
+  a scale error, not a lag or a dropout: the belt speed iFit reports — which is
+  all our footpod can broadcast — is about 1.4 % below what the Runn measures
+  optically. Both recordings are internally consistent (a file's distance
+  advances at the rate its own speed claims, to 0.2 %), so neither watch is
+  confused; the two sensors simply disagree about the same belt by 1.4 %.
+- **Our cadence lands as literally zero in every record**, and as the familiar
+  avg 253 / max 0 at session level. Against the control above — where the
+  watch's recorded cadence tracked the Runn's broadcast page 2 to 95.4 % — this
+  closes the loop: the watch reads page 2's cadence field, so it reads ours,
+  and ours says nothing usable.
+- One confound, named: the 6X also had the Runn attached as **FE-C**
+  (`device_info` device_index 4, `fitness_equipment`) alongside our footpod.
+  Its speed is 1.4 % off the Runn's own SDM figure, so it is not coming from
+  the Runn on either profile — but a future comparison should pair the
+  bridge-side watch to the bridge alone.
+
+⚠ The 6X's battery had gone flat, so it started recording on a reset RTC and
+stamped the first five records 2026-04-25 before its clock corrected itself
+mid-run (a 115.5-day jump at 22:08:47 UTC). `compare_sdm_traces.py` aligns on
+absolute UTC and falls back to start-relative alignment when two recordings do
+not overlap at all; here the post-correction 271 records aligned directly. The
+pauses are NOT synchronised between the two watches, which is why the distance
+comparison sums consecutive common samples instead of differencing endpoints —
+done the naive way it reported the bridge running 0.6 % LONG while its speed
+read 1 % short.
+
+The same conclusion falls out of the recording history independently:
+`docs/sdm-recording-analysis.md` §14 tabulates every .FIT and shows the
+signature is present in the first run our footpod ever appeared in — ten days
+and four recordings before page 22 — and unmoved by page 22 and page 70 alike.
+The only variable that has ever changed it is which sensor the watch is paired
+to.
+
+That makes the next change a decision rather than a guess. The bridge still has
+no stride sensor and still must not invent a cadence — but it now has a third
+option it did not have before: **stop broadcasting page 2 at all**, so the watch
+has no SDM cadence field to read and falls back to the wrist cadence that
+`docs/sdm-recording-analysis.md` §12.2 shows is correct and available. Page 2's
+slots would return to page 1, which carries speed anyway. Not done here: it
+costs a full run to verify, and the run is the user's.
