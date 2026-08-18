@@ -70,14 +70,21 @@ FIT      ?= test/23842067586_ACTIVITY.fit
 BASELINE ?= test/baselines/23842067586-post-fix.json
 # The hole-periodicity check must use the page-cycle length of the firmware that
 # RECORDED the trace, not the one in the tree today. Empty means "read
-# CYCLE_LEN x SDM_CHANNEL_PERIOD from firmware/ant_sdm.c", which is correct for
-# the post-fix default and stays correct as that file changes.
+# CYCLE_LEN x SDM_CHANNEL_PERIOD from firmware/ant_sdm.c".
+#
+# ⚠ It is NOT empty any more. The default FIT was recorded on firmware whose
+# SDM_CHANNEL_PERIOD was 8192 (64 slots x 0.25 s = 16.0 s); the tree now
+# transmits at the profile-correct 8134 (15.885 s), so reading the value out of
+# ant_sdm.c would model this trace with a period its recording firmware never
+# used. **Drop this back to empty the moment the default FIT is re-recorded on
+# 8134 firmware** — and note that until then a `make pace-test FIT=new.fit` on a
+# NEW trace silently inherits the 16.0 pin and must override it.
 #
 # Re-scoring the pre-fix trace needs its recording firmware's values passed
 # explicitly — it predates the background-page spread (68 slots x 0.25 s):
 #   make pace-test FIT=test/23806153959_ACTIVITY.fit \
 #                  BASELINE=test/baselines/23806153959-pre-fix.json SDM_CYCLE=17.0
-SDM_CYCLE ?=
+SDM_CYCLE ?= 16.0
 PACE_ARGS = $(if $(SDM_CYCLE),--sdm-cycle-s $(SDM_CYCLE))
 
 pace-test:

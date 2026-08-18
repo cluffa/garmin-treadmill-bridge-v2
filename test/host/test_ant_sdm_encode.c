@@ -57,6 +57,9 @@ int main(void) {
     ant_sdm_encode_page2(&b, p2);
     assert(p2[0] == 0x02 && (p2[4] & 0x0F) == 0x03 && p2[5] == 0x80);
     assert(p2[1] == 0xFF && p2[2] == 0xFF);
+    /* byte 6 is reserved and must be 0xFF, matching the SDK's own encoder and
+     * every page 2 a real SDM sensor was observed sending. */
+    assert(p2[6] == 0xFF);
     /* status byte: use state must read ACTIVE (bits[1:0] == 1). A 0 here means
      * "footpod not in use" and the watch records speed 0 whenever it samples a
      * page 2 — the 0 km/h spikes seen in test/23806153959_ACTIVITY.fit.

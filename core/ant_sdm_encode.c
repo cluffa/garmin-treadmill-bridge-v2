@@ -73,6 +73,13 @@ void ant_sdm_encode_page2(const treadmill_state_t *s, uint8_t out[8]) {
     out[3] = 0xFF;                              /* cadence, integer: invalid */
     out[4] = (uint8_t)(0xF0 | speed_int(s->speed_mps)); /* cad frac | speed int */
     out[5] = speed_frac(s->speed_mps);          /* speed, 1/256 m/s */
-    out[6] = 0x00;                              /* reserved */
+    /* Reserved, and reserved means 0xFF here — not 0x00. The SDK's own encoder
+     * writes UINT8_MAX (ant_sdm_page_2.c, field `reserved3`) and the real
+     * treadmill SDM sensor captured on 2026-08-18 sends 0xFF in all 687 of its
+     * page 2s. A zero in a reserved byte is the same class of mistake this
+     * profile has already cost this project twice — a well-formed value where
+     * "no value" was meant. Nothing is known to read it; that is not a reason
+     * to be the one sensor on the network that fills it in. */
+    out[6] = 0xFF;
     out[7] = SDM_STATUS_ACTIVE;                 /* use state active, health OK */
 }

@@ -22,7 +22,18 @@
 #define SDM_DEVICE_TYPE    124     /* ANT+ SDM (Stride-Based Speed & Distance) */
 #define SDM_TRANS_TYPE     0x05    /* independent channel, per SDM profile    */
 #define SDM_RF_FREQ        57      /* 2457 MHz — ANT+                         */
-#define SDM_CHANNEL_PERIOD 8192    /* ~4 Hz, per the SDM device profile       */
+/* 8134 (~4.03 Hz) is what the ANT+ SDM device profile specifies, and it is not
+ * a round number by accident: $SDK_ROOT/components/ant/ant_profiles/ant_sdm/
+ * ant_sdm.h names SDM_MSG_PERIOD_4Hz = 8134 and SDM_MSG_PERIOD_2Hz = 16268 as
+ * the *only* periods the profile supports. This was 8192 — a comment claiming
+ * profile compliance over a value the profile does not allow — until
+ * 2026-08-18, when the ANT sniffer (firmware/ant_log.c) caught a real treadmill
+ * SDM sensor transmitting at a measured 248 ms median, i.e. 8134.
+ *
+ * A tracking slave re-syncs to the master it hears, so 8192 worked; this is
+ * about not being 0.7% off a certified profile in a way nothing on the watch
+ * side would ever report. See docs/ant-logging.md. */
+#define SDM_CHANNEL_PERIOD 8134
 
 /* ---- Page cadence (SDM profile) --------------------------------------------
  *
@@ -38,8 +49,9 @@
  * advancing through them, so nothing had actually stopped). Interleaving
  * guarantees at least three page 1s inside any one-second window.
  *
- * Cycle of 64 TX slots (~16 s at 4 Hz), so each common page still repeats
- * every 64 messages, inside the 65-message requirement:
+ * Cycle of 64 TX slots (~15.9 s at 4.03 Hz), so each common page still repeats
+ * every 64 messages, inside the 65-message requirement — which is counted in
+ * MESSAGES, not seconds, so the channel period does not enter into it:
  *    7  page 22 (capabilities — cadence declared unsupported)
  *   15  page 2 (cadence/status — cadence invalid, treadmill has no stride)
  *   31  common page 80
