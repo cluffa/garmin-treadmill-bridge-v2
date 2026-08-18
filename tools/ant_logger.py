@@ -284,6 +284,16 @@ def main():
                     print("\r%5d msgs  searching..." % n_msgs, end="", flush=True)
     except (KeyboardInterrupt, SystemExit):
         print()
+    except OSError as e:
+        # The console node went away underneath us -- the board re-enumerated,
+        # or macOS dropped the CDC configuration (it needs `make usb-kick`
+        # after every app boot; see docs/flashing.md 8a). This is not a reason
+        # to lose a capture: the JSONL is line-buffered, so everything up to
+        # this instant is already on disk, and a traceback at minute 50 of a
+        # workout would read as "the tool broke" rather than "the cable did".
+        print("\nconsole disconnected (%s)" % e)
+        print("the log up to this point is intact; to resume:")
+        print("  make usb-kick && %s %s" % (sys.argv[0], args.tty))
     finally:
         try:
             send("ANTLOG")
