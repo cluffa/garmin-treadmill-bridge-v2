@@ -65,6 +65,26 @@ uint32_t ctrl_sdm_p70_requests(void);
 uint32_t ctrl_sdm_p70_rejects(void);
 uint8_t  ctrl_sdm_p70_last_page(void);
 
+/* ANT+ sniffer channel — the console side of firmware/ant_log.c, driven by the
+ * `ANTLOG` command. It opens a second ANT slave channel that locks onto some
+ * OTHER sensor in the room and dumps its pages to the console, so a real
+ * footpod (or a treadmill's own ANT+ broadcast) and the one this bridge
+ * synthesizes can be logged from one radio against one clock.
+ *
+ * Wildcards: 0 for dev_num / dev_type / trans_type each mean "any". period 0
+ * means "pick from dev_type" and freq 0 means 57 (ANT+). start() returns
+ * NRF_SUCCESS (0) or a SoftDevice error code; the console prints the number
+ * rather than swallowing it, because every plausible failure here (channel not
+ * allocated, wrong state, bad period) is distinguished only by that code.
+ *
+ * Weakly defined in core as "no radio", like the p70 counters above — core has
+ * no radio and the host tests link core alone. Firmware overrides them from
+ * firmware/ant_log.c. */
+uint32_t ctrl_antlog_start(unsigned dev_num, unsigned dev_type,
+                           unsigned trans_type, unsigned period, unsigned freq);
+uint32_t ctrl_antlog_stop(void);
+void     ctrl_antlog_status(char *buf, unsigned cap);
+
 /* Parse and execute one ASCII command line.
  * `tx` is called zero or more times with JSON response strings (no trailing \n).
  * Thread-safe: individual commands are atomic against concurrent dispatches

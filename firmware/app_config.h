@@ -66,7 +66,12 @@
 #define PM_CENTRAL_ENABLED 1
 
 /* ---- ANT stack configuration (S340 SoftDevice) ------------------------------- */
-#define NRF_SDH_ANT_TOTAL_CHANNELS_ALLOCATED 1   /* SDM master channel */
+/* Two: the SDM footpod master (channel 0, ant_sdm.c) and the sniffer slave
+ * (channel 1, ant_log.c) that logs another sensor for comparison. This sizes a
+ * static app-RAM buffer (NRF_SDH_ANT_BUF_SIZE in nrf_sdh_ant.h) that is handed
+ * to sd_ant_enable(); it does NOT move the SoftDevice's RAM base, so the
+ * linker script is unaffected. */
+#define NRF_SDH_ANT_TOTAL_CHANNELS_ALLOCATED 2
 #define NRF_SDH_ANT_ENCRYPTED_CHANNELS 0          /* no encrypted channels */
 #define NRF_SDH_ANT_BURST_QUEUE_SIZE 128
 #define NRF_SDH_ANT_EVENT_QUEUE_SIZE 32

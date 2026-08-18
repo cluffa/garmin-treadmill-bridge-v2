@@ -145,6 +145,90 @@ __attribute__((weak)) uint8_t ctrl_sdm_p70_last_page(void)
     return 0;
 }
 
+/* Platforms with no ANT radio cannot sniff one — see ctrl_dispatch.h.
+ * Firmware overrides all three from firmware/ant_log.c. */
+__attribute__((weak)) uint32_t ctrl_antlog_start(unsigned dev_num,
+                                                 unsigned dev_type,
+                                                 unsigned trans_type,
+                                                 unsigned period,
+                                                 unsigned freq)
+{
+    (void)dev_num; (void)dev_type; (void)trans_type; (void)period; (void)freq;
+    return 1;
+}
+
+__attribute__((weak)) uint32_t ctrl_antlog_stop(void)
+{
+    return 0;
+}
+
+__attribute__((weak)) void ctrl_antlog_status(char *buf, unsigned cap)
+{
+    snprintf(buf, cap, "{\"cmd\":\"antlog\",\"running\":false,"
+                       "\"err\":\"no radio\"}");
+}
+
+/* ANTLOG [ START [type [dev [period [freq]]]] | STOP ]
+ *
+ * Bare ANTLOG reports status. Arguments are positional and every one of them
+ * has a working default, because the first thing you run is the one with none:
+ * `ANTLOG START` searches with a wildcard id and reports what it locked onto,
+ * and only then do you know the device type to pin. Transmission type is always
+ * wildcard — no ANT+ profile identifies a sensor by it, and asking for one
+ * would only be a way to fail to find a sensor that is right there. */
+static void cmd_antlog(const char *args, ctrl_tx_fn tx, void *ctx)
+{
+    char buf[288];
+
+    while (*args == ' ') args++;
+
+    if (*args == '\0') {
+        ctrl_antlog_status(buf, sizeof buf);
+        tx(buf, ctx);
+        return;
+    }
+
+    if (strncmp(args, "STOP", 4) == 0) {
+        ctrl_antlog_stop();
+        tx("{\"cmd\":\"antlog\",\"act\":\"stop\",\"ok\":true}", ctx);
+        return;
+    }
+
+    if (strncmp(args, "START", 5) == 0) {
+        const char *p = args + 5;
+        unsigned long v[4] = {0, 0, 0, 0};   /* type, dev, period, freq */
+        for (int i = 0; i < 4; i++) {
+            char *end;
+            unsigned long n = strtoul(p, &end, 10);
+            if (end == p) break;             /* no more numbers — keep 0 */
+            v[i] = n;
+            p = end;
+        }
+        while (*p == ' ') p++;
+        if (*p != '\0') {
+            tx("{\"cmd\":\"antlog\",\"ok\":false,\"err\":\"bad value\"}", ctx);
+            return;
+        }
+        uint32_t err = ctrl_antlog_start((unsigned)v[1], (unsigned)v[0], 0,
+                                         (unsigned)v[2], (unsigned)v[3]);
+        if (err != 0) {
+            snprintf(buf, sizeof buf,
+                     "{\"cmd\":\"antlog\",\"act\":\"start\",\"ok\":false,"
+                     "\"err\":%lu}", (unsigned long)err);
+            tx(buf, ctx);
+            return;
+        }
+        /* Echo the resolved configuration, not just "ok": the defaults this
+         * command fills in (the per-profile channel period especially) are
+         * exactly what you need to know when nothing locks. */
+        ctrl_antlog_status(buf, sizeof buf);
+        tx(buf, ctx);
+        return;
+    }
+
+    tx("{\"cmd\":\"antlog\",\"ok\":false,\"err\":\"bad value\"}", ctx);
+}
+
 static void cmd_status(ctrl_tx_fn tx, void *ctx)
 {
     bool conn = machine_connected();
@@ -213,6 +297,8 @@ void ctrl_dispatch(const char *line, ctrl_tx_fn tx, void *ctx)
     if (strcmp(buf, "STATUS") == 0)       { cmd_status(tx, ctx); return; }
     if (strcmp(buf, "STOP") == 0)         { cmd_stop(tx, ctx); return; }
     if (strcmp(buf, "DFU") == 0)          { cmd_dfu(tx, ctx); return; }
+    if (strcmp(buf, "ANTLOG") == 0)       { cmd_antlog("", tx, ctx); return; }
+    if (strncmp(buf, "ANTLOG ", 7) == 0)  { cmd_antlog(buf + 7, tx, ctx); return; }
     if (strncmp(buf, "CONNECT ", 8) == 0) {
         char *end;
         long idx = strtol(buf + 8, &end, 10);

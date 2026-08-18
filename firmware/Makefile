@@ -45,6 +45,7 @@ SRC_FILES += \
   $(FW_DIR)/usb_cdc_log.c \
   $(FW_DIR)/app_state.c \
   $(FW_DIR)/ant_sdm.c \
+  $(FW_DIR)/ant_log.c \
   $(FW_DIR)/ble_ctrl_svc.c \
   $(FW_DIR)/ble_central.c \
   $(FW_DIR)/last_device.c \
