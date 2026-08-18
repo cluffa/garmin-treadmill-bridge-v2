@@ -82,3 +82,4 @@ dkms.conf
 # timestamps and a device serial — keep them out of the repo. See CLAUDE.md.
 *.fit
 *.FIT
+logs/
