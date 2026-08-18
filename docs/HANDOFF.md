@@ -31,7 +31,28 @@ meantime — `docs/flashing.md` §8b is the full no-SWD recipe, and it is how th
 
 ## Current state — one line
 
-**2026-08-12 (latest): workout difficulty scaling is implemented and flashed
+**2026-08-18 (latest): the bridge can now log a *second* ANT+ sensor and has
+done so (`0818-1752 1999140+`, branch `workout-difficulty-scaling`, uncommitted).**
+A slave channel (ANT channel 1, `firmware/ant_log.c`) locks onto another sensor
+and dumps its pages to the USB console; `tools/ant_logger.py` decodes them into
+`logs/antlog-*.jsonl`. Verified live against a real treadmill SDM sensor
+(dev 19316): 300+ consecutive messages, zero radio dropouts, alongside a live
+iFit treadmill link and our own footpod broadcast — i.e. the three-radio load
+now has a fourth consumer and stayed stable. Usage, the two non-obvious
+constraints, and what the first capture showed:
+[`docs/ant-logging.md`](ant-logging.md). Notable: a real SDM sensor broadcasts a
+flat-zero time field and stride count and a *valid* cadence.
+
+Two profile-compliance fixes came out of that capture and are flashed
+(`0818-1802 1999140+`): `SDM_CHANNEL_PERIOD` 8192 → **8134** (the only 4 Hz
+period the profile allows, and what the real sensor transmits at), and page 2's
+reserved byte 6 `0x00` → **0xFF**. `make pace-test`'s `SDM_CYCLE` is pinned to
+16.0 as a result — the default .FIT was recorded at 8192 — and must go back to
+empty when that trace is re-recorded. Host tests and the pace gate both pass.
+**Cadence is still not fixed and was deliberately not touched**; the next step
+is the control experiment in `docs/ant-logging.md`. Nothing committed.
+
+**2026-08-12: workout difficulty scaling is implemented and flashed
 (`0812-1300 254d743`, branch `workout-difficulty-scaling`).** Change the belt
 speed once on any interval and every later interval carries the same relative
 change — `commanded = base * scale`, learned as `observed / base` from either

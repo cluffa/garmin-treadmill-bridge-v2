@@ -101,7 +101,9 @@ simultaneous FTMS+iFit connections.
 
 ## ANT
 
-- Device type 124 (Stride SDM).
+- Device type 124 (Stride SDM), channel period **8134** — the profile allows
+  only 8134 and 16268, and a real SDM sensor was measured at 8134 on
+  2026-08-18. It was 8192 until then; see `docs/ant-logging.md`.
 - Network key in git-ignored `ant_network_key.h` (placeholder builds; real key from thisisant.com).
 - ANT eval license key passed by Makefile.
 - The footpod keeps **its own clock**, integrated from the app_timer RTC in
@@ -133,6 +135,20 @@ simultaneous FTMS+iFit connections.
   event handler must keep pumping on `EVENT_TRANSFER_TX_COMPLETED`/`_FAILED` as
   well as `EVENT_TX` — an acknowledged response replaces `EVENT_TX`, so dropping
   those two stalls the whole broadcast (§13.3).
+
+## Logging another ANT+ sensor
+
+`ANTLOG` (console) + `tools/ant_logger.py` open a **second** ANT channel — a
+slave, channel 1 — that locks onto some other ANT+ sensor and logs every page it
+receives to `logs/antlog-*.jsonl`, so a real sensor and our synthesized footpod
+are captured by one board off one clock. `docs/ant-logging.md` has the usage,
+the two non-obvious constraints (low-priority search, and the asynchronous
+channel close that makes a naive re-open fail with 0x4015), and the first
+capture's findings — including that a real treadmill SDM sensor broadcasts a
+flat-zero time field and stride count, and a *valid* cadence.
+
+Off unless asked for: an open slave channel costs radio time that belongs to
+the footpod broadcast the watch is recording.
 
 ## Secrets (never committed)
 
@@ -214,7 +230,12 @@ recording firmware's values passed explicitly (`--sdm-cycle-s`,
 `--rest-policy`). Findings and the current numbers: `docs/pace-lag-analysis.md`.
 
 The default gate is the **post-fix** trace (`test/23842067586_ACTIVITY.fit`,
-2026-08-03) with `SDM_CYCLE` empty so the cycle is read from `ant_sdm.c`.
+2026-08-03) with `SDM_CYCLE` **pinned to 16.0** — that trace was recorded when
+`SDM_CHANNEL_PERIOD` was 8192, and the tree now transmits at the
+profile-correct 8134, so reading the cycle out of `ant_sdm.c` would model the
+trace with a period its recording firmware never used. Put the pin back to
+empty when the default trace is re-recorded; until then a *new* .FIT scored
+with `make pace-test FIT=…` silently inherits 16.0 and must override it.
 Re-scoring the archived pre-fix trace needs all three overrides together —
 `FIT=`, `BASELINE=`, and `SDM_CYCLE=17.0`; the exact line is in the Makefile
 comment above the vars. Both .FITs are **untracked on purpose** (real
