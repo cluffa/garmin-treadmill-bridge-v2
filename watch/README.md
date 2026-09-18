@@ -19,7 +19,7 @@ are in one tree.
 
 | Project | Type | Characteristics used | Purpose |
 |---|---|---|---|
-| `garmin_data_field/` | data field | `A6ED0001` + `A6ED0004` (write) | Sends the 15-byte workout telemetry frame so the belt follows the workout target. **The main product path.** |
+| `garmin_data_field/` | data field | `A6ED0001` + `A6ED0004` (write) | Sends the 20-byte workout telemetry frame so the belt follows the workout target, a step ahead of the boundary. **The main product path.** |
 | `garmin_ctrl_app/` | app | `A6ED0001` + `A6ED0002` (write) + `A6ED0003` (notify) | SCAN / CONNECT / STATUS picker UI over the ctrl grammar and `D`/`E`/`S` frames. |
 
 The data field deliberately does **not** subscribe to `A6ED0003` — it only
@@ -41,6 +41,7 @@ twice. `core/workout_ctrl.c` `decode_action()`:
 | Running, no structured step | `timerState=3`, `flags=0x00` | **`ACT_NONE`** — belt left **exactly** as-is |
 | Running, step with non-speed target | `tgtType != 0` | `ACT_NONE` — belt held (keeps it moving through an OPEN rest step) |
 | Running, step with speed target | `tgtType=0`, `lo`/`hi` mm/s | **`ACT_SPEED`** at the midpoint |
+| Running, within `advance_s` of a boundary | `flags` bit5, `remaining_s <= advance_s` | **`ACT_SPEED`** at the **next** step's speed (see below) |
 
 `ACT_NONE` means "don't touch the belt", and `workout_ctrl_tick()` keeps
 re-asserting the last latched speed. So during a **free run** the belt holds
@@ -49,6 +50,12 @@ working" while everything is in fact correct.
 
 **To actually drive the belt you need a structured workout with a speed target
 loaded and started on the watch.**
+
+The speed advance changes nothing about this. A free run resolves no current
+step, so the field packs no next step either (`flags` bit5 clear) and
+`remaining_s` stays `0xFFFF` — every pre-roll condition fails and the belt is
+still not touched. The last row above only ever fires inside a structured
+workout.
 
 Observed on hardware 2026-07-29 with a genuine free run:
 ```
@@ -62,12 +69,75 @@ emits this base frame when both `Activity.getCurrentWorkoutStep()` and the
 
 ## Wire format
 
-The 15-byte frame written to `A6ED0004` must stay in lockstep with
+The frame written to `A6ED0004` must stay in lockstep with
 `core/workout_ctrl.h` — that header carries the authoritative layout and says so.
-`FRAME_VERSION` / `WORKOUT_FRAME_VERSION` is **1**; `FRAME_LEN` /
-`WORKOUT_FRAME_LEN` is **15**. Speed targets are **mm/s** on the wire. A frame
-whose length or version does not match is dropped by the firmware (now logged as
-`wkt … MALFORMED` rather than silently).
+`FRAME_VERSION` / `WORKOUT_FRAME_VERSION` is **2**; `FRAME_LEN` /
+`WORKOUT_FRAME_LEN` is **20**. Speed targets are **mm/s** on the wire. A frame
+whose length or version does not match is dropped by the firmware (logged as
+`wkt … MALFORMED` rather than silently). `make host-test` runs
+`test/check_frame_contract.py`, which fails the build if the header, this
+project and `test/mock/wkt_decode.py` stop agreeing.
+
+20 bytes is the ceiling, not a round number: the firmware's ATT MTU is 23 and
+the watch does not negotiate, so a write payload is MTU − 3.
+
+**v1 (15 bytes) is still accepted by the firmware**, so an older data-field
+build keeps driving new firmware — it simply gets no pre-roll. The reverse does
+**not** work: old firmware drops a v2 frame as `MALFORMED` and the belt does
+nothing at all. So the rollout order is **firmware first, then the data
+field**, and read the `CONN <stamp>` row before judging any result.
+
+### v2: the next step and the advance
+
+Bytes 0–9 are byte-for-byte v1. `durationValue` narrowed from u32 to u16 (it
+was informational, and no treadmill step needs more than 65535 s or m), which
+freed `[12..13]` for `remaining_s`. `[15..18]` carry the next step —
+intensity, target type, and its speed range already resolved to a midpoint in
+mm/s — and `[19]` carries `advance_s`.
+
+The bridge, not the watch, decides what to do with them: if the next step
+resolves to a speed and the current one has `advance_s` or less to run, it
+commands that speed early, so the belt has finished ramping when the watch's
+step actually starts. The field is still a telemetry packer.
+
+`remaining_s` is only put on the wire exactly when it is inside the window the
+bridge can act on (`advance_s + 3`); outside it the field sends `0xFFFE`
+("far"), and `0xFFFF` when it genuinely cannot tell. Without that gating the
+frame — which is change-gated — would change every second and turn a quiet
+timed step into a 1 Hz write stream. Expect roughly one write per step plus
+`advance_s + 3` one-second frames at its end.
+
+### Settings
+
+`resources/properties.xml` + `resources/settings.xml`, editable from the
+Connect IQ phone app and re-read through `AppBase.onSettingsChanged()` without
+restarting the activity:
+
+| key | type | default | range | effect |
+|---|---|---|---|---|
+| `advanceSec` | number | **5** | 0–30 | seconds of pre-roll; 0 turns it off and the bridge commands at the boundary, as v1 |
+| `advanceUpOnly` | boolean | false | | pre-roll speed *increases* only, so the full work interval runs at work pace and the rest starts late |
+
+### ⚠ Unverified assumptions (Phase 0 of the speed-advance plan)
+
+Two things the Connect IQ docs do not state, currently assumed rather than
+measured. Both are one-line changes in `DataFieldView.mc`, and both are Phase 0
+of `docs/superpowers/plans/2026-09-18-speed-advance.md`:
+
+- **`WorkoutStep.durationValue` units.** Assumed **seconds** for a TIME
+  duration and **metres** for a DISTANCE one, via the named constants
+  `DUR_TIME_DIV` / `DUR_DIST_DIV` (both 1). If it turns out to be
+  milliseconds, `DUR_TIME_DIV` becomes 1000 and nothing else moves. A wrong
+  divisor makes `remaining_s` wrong, which mostly means the pre-roll never
+  fires (remaining never falls into the window) rather than firing early.
+- **What `Activity.getNextWorkoutStep()` returns inside an interval.** Assumed
+  to be the next *portion* to run — i.e. the rest portion while the work
+  portion is running. If it instead returns the next repetition's work step,
+  the rest never pre-rolls and the fallback in the plan's Phase 0 (synthesise
+  the rest slot from `repetitionNumber` + intensity) is needed.
+
+Confirm both against `make mock-bridge`, whose log prints the decoded next slot
+and the countdown, before trusting any before/after measurement.
 
 ## Building
 

@@ -91,7 +91,12 @@ Must be empty (pure protocol constant names like `ble_` are fine only if they pu
   silently broke watch compatibility until 2026-07-29.
 - Char `A6ED0002` write: uppercase ctrl grammar (`SPEED`, `SCAN`, `CONNECT`, `STOP`, `LIST`, `STATUS`).
 - Char `A6ED0003` notify: compact `D`/`E`/`S` frames (CIQ MTU is 23; notify payload <= 20 bytes).
-- Char `A6ED0004` write: raw 15-byte little-endian workout frame -> `workout_ctrl`.
+- Char `A6ED0004` write: raw little-endian workout frame -> `workout_ctrl`.
+  20-byte **v2** (current step + next step + seconds left in the current step +
+  the pre-roll advance) or 15-byte **v1**, which the firmware still accepts so
+  an older data-field build keeps working. The reverse does not: old firmware
+  drops a v2 frame as MALFORMED and the belt does nothing, so flash the
+  firmware *before* sideloading the data field. Layout: `core/workout_ctrl.h`.
 
 ## One-connection-at-a-time invariant
 
@@ -128,7 +133,7 @@ simultaneous FTMS+iFit connections.
 The bridge between them is `core/machine.h` — a unified facade that auto-detects FTMS (0x1826) and iFit (0x1533) into one device list and routes connect/speed/incline/stop to the right adapter.
 `firmware/app_state.h` is the shared struct all three radios and the testboard render from.
 `watch/` is the Connect IQ side, vendored in on 2026-07-29: `garmin_data_field`
-(writes the 15-byte workout frame to `A6ED0004` — the main product path) and
+(writes the 20-byte workout frame to `A6ED0004` — the main product path) and
 `garmin_ctrl_app` (the SCAN/CONNECT picker over `A6ED0002`/`0003`). See
 `watch/README.md`.
 
@@ -173,9 +178,13 @@ activities: HR, timestamps, device serial), so `make pace-test` fails on a fresh
 clone until one is supplied.
 
 `make host-test` runs `make check-uuid` first, which asserts firmware, mock, and
-both CIQ projects agree on the 128-bit A6ED base. Keep it that way: the watch
-finds the bridge by *filtering* on that UUID, so any disagreement is silent — the
-watch simply never sees the device.
+both CIQ projects agree on the 128-bit A6ED base, and (via
+`test/check_frame_contract.py`) that `core/workout_ctrl.h`, `DataFieldView.mc`
+and `test/mock/wkt_decode.py` agree on the A6ED0004 frame's version and length.
+Keep it that way: the watch finds the bridge by *filtering* on that UUID, so any
+disagreement is silent — the watch simply never sees the device — and a frame
+version/length mismatch is just as silent one layer down, with the firmware
+dropping every frame as MALFORMED and the belt simply never moving.
 
 ## `firmware/` Makefile TESTBOARD stamp
 

@@ -264,3 +264,57 @@ workouts. Pre-fix rested at work pace (Σ|Δ| ≈ 3.2 m/s over 19 changes); post
 rests at 4 km/h (Σ|Δ| ≈ 39 m/s over 29 changes), so absolute area is ~12× larger
 by construction. `effective_lag_s` = IAE/Σ|Δ| normalises exactly this out and is
 the only cross-workout comparable metric.
+
+---
+
+## 6. Speed advance — commanding the next step early
+
+The 1.371 s above is the *command* path: the time from the watch's step
+boundary to the bridge issuing the new target. What it does not cover is the
+belt. A treadmill accelerating from a 4 km/h rest walk to a 14 km/h work pace
+spends several seconds of every work interval below target, and the same
+coming down. That ramp is physical, and no amount of BLE tuning removes it.
+
+The fix is to move the command earlier: the data field now sends the *next*
+step and how long the current one has left (wire format v2), and
+`core/workout_ctrl.c` commands the next speed `advance_s` seconds before the
+boundary, so the belt has finished ramping when the watch's step starts.
+Default 5 s, settable 0–30 from the data field's Connect IQ settings, 0 = off.
+The design, the rules and the guards are in
+`docs/superpowers/plans/2026-09-18-speed-advance.md`; the policy itself is unit
+tested by `make host-test`.
+
+### What this means for this scorer
+
+**A trace recorded with the advance on must be scored with `ADVANCE=` set to
+the value the recording firmware was running.** It is a property of the trace,
+exactly like `SDM_CYCLE`, not a tuning knob:
+
+```sh
+make pace-test FIT=test/<new>.fit BASELINE=test/baselines/<new>-advance-5.json ADVANCE=5
+make pace-report FIT=test/<new>.fit ADVANCE=5   # add ADVANCE_UP_ONLY=1 if set
+```
+
+With the advance modelled, `command_signal()` moves each qualifying lap
+boundary earlier by `advance_s`, so the reference command leads the laps the
+same way the bridge did. Score the same file with `ADVANCE=0` and the scorer
+sees the belt changing speed *before* it was told to, which it can only report
+as several seconds of area between the curves — the pre-roll shows up as lag
+rather than as the improvement it is. The scorer's `--self-test` pins both
+halves of that on a synthetic run that leads by 5 s.
+
+The archived baselines (`23806153959-pre-fix`, `23842067586-post-fix`) predate
+the feature and keep scoring with the default empty `ADVANCE`. Baselines
+written from here on record the advance they were scored with, and `compare()`
+says so when a candidate disagrees.
+
+### Numbers
+
+**None yet — the hardware run is pending.** Phase 5 of the plan is the gate:
+firmware first, then the data field, stamp confirmed, then `30 s @ 10.8 /
+30 s @ 11.4 / 30 s rest` × 10 (deliberately not the usual 10 s steps, which sit
+exactly on the short-step guard's `2 × advance` edge), run once in SDM:TGT mode
+and once against the actual belt. The acceptance criterion is the actual-belt
+trace: time from the lap boundary to the belt being within 0.2 km/h of target,
+expected to fall from "several seconds" to ≲1 s. Those numbers belong in this
+section when they exist.

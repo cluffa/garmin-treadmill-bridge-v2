@@ -24,7 +24,7 @@ FW_MAKE_ARGS = \
 help:
 	@echo "Build:"
 	@echo "  make host-test              core/ unit tests (no toolchain needed)"
-	@echo "  make check-uuid             assert firmware/mock/watch agree on the A6ED UUID"
+	@echo "  make check-uuid             assert firmware/mock/watch agree on the A6ED UUID + frame format"
 	@echo "  make mock-test              mock-bridge unit tests (decoder + probe ABI)"
 	@echo "  make pace-test              score belt pace tracking/lag from a .FIT vs baseline"
 	@echo "  make pace-report FIT=x.fit  full pace/lag report for one recorded workout"
@@ -53,9 +53,13 @@ host-test: check-uuid
 
 # The watch discovers the bridge by filtering on the 128-bit A6ED service UUID,
 # so firmware/mock/CIQ disagreement is SILENT — the watch just never finds the
-# device. Cheap to check, so it runs as part of the standard gate.
+# device. The A6ED0004 frame's version/length is the same shape of problem one
+# layer down: disagree and the firmware drops every frame as MALFORMED, so the
+# belt never moves and nothing says why. Both are cheap, so both run as part of
+# the standard gate.
 check-uuid:
 	@python3 test/check_uuid_contract.py
+	@python3 test/check_frame_contract.py
 
 # Pace-tracking regression gate. Scores a .FIT recorded in SDM:TGT mode against
 # what the bridge should have commanded, and compares it to a stored baseline.
@@ -78,7 +82,18 @@ BASELINE ?= test/baselines/23842067586-post-fix.json
 #   make pace-test FIT=test/23806153959_ACTIVITY.fit \
 #                  BASELINE=test/baselines/23806153959-pre-fix.json SDM_CYCLE=17.0
 SDM_CYCLE ?=
-PACE_ARGS = $(if $(SDM_CYCLE),--sdm-cycle-s $(SDM_CYCLE))
+# Seconds of speed advance (pre-roll) the RECORDING firmware was running — a
+# property of the trace, like SDM_CYCLE, not a tuning knob. With the advance on,
+# the bridge commands each step early, so the commanded timeline leads the laps;
+# scoring such a trace with the default 0 reports that lead as several seconds
+# of lag. The archived baselines predate the feature, hence the empty default.
+#   make pace-test FIT=test/new-run.fit BASELINE=... ADVANCE=5
+# Add ADVANCE_UP_ONLY=1 if the recording firmware had FLAG_ADV_UP_ONLY set.
+ADVANCE ?=
+ADVANCE_UP_ONLY ?=
+PACE_ARGS = $(if $(SDM_CYCLE),--sdm-cycle-s $(SDM_CYCLE)) \
+            $(if $(ADVANCE),--advance-s $(ADVANCE)) \
+            $(if $(ADVANCE_UP_ONLY),--advance-up-only)
 
 pace-test:
 	./test/pace_lag_report.py --self-test

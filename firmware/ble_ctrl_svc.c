@@ -4,7 +4,8 @@
  * Vendor service A6ED0001-D344-460A-8075-B9E8EC90D71B with 3 characteristics:
  *   A6ED0002 (write)     → route bytes to ctrl_dispatch()
  *   A6ED0003 (notify)    → compact D/E/S frames (≤ 20 B, CIQ MTU is 23)
- *   A6ED0004 (write)     → raw 15-byte workout frame → workout_ctrl_on_frame()
+ *   A6ED0004 (write)     → raw workout frame (20-byte v2, or 15-byte v1 from an
+ *                          older data-field build) → workout_ctrl_on_frame()
  *
  * Advertising carries the A6ED service UUID in the primary ADV packet;
  * the device name goes in the scan response.
@@ -202,6 +203,26 @@ static void ctrl_log_tx(const char *msg, void *ctx)
 
 /* ---- BLE event handling ----------------------------------------------------- */
 
+/* flags bit5 in the v2 frame: bytes 15-18 carry a resolved next step. Mirrored
+ * here rather than exported from core/ — this is logging, and workout_ctrl.c
+ * owns the decision. See the layout in core/workout_ctrl.h. */
+#define WKT_FLAG_HAS_NEXT 0x20
+
+/* Are two frames the same as far as the *log* is concerned?
+ *
+ * Everything the frame carries except remaining_s at [12..13]. That field
+ * counts down once a second through the pre-roll window, so including it would
+ * make every countdown frame "new" and put the end of every workout step into
+ * the RTT ring — the exact spam this gate exists to prevent. The pre-roll
+ * itself still gets announced, once per step, below. */
+static bool wkt_key_same(const uint8_t *a, const uint8_t *b, uint16_t n)
+{
+    if (memcmp(a, b, 9) != 0)                              return false; /* 0..8  */
+    if (n > 9  && memcmp(a + 9,  b + 9,  3) != 0)          return false; /* 9..11 */
+    if (n > 14 && memcmp(a + 14, b + 14, n - 14) != 0)     return false; /* 14..  */
+    return true;
+}
+
 /* Log an incoming A6ED0004 workout frame.
  *
  * This path used to be completely silent, which made the single most important
@@ -213,52 +234,90 @@ static void ctrl_log_tx(const char *msg, void *ctx)
  *
  * Frames arrive at the data field's compute() rate (~1 Hz), so logging every one
  * would wrap the 8 KB RTT ring in minutes and bury everything else. Log when the
- * decision-relevant prefix changes, plus a periodic heartbeat so a steady stream
- * still proves liveness. */
+ * decision-relevant bytes change, plus a periodic heartbeat so a steady stream
+ * still proves liveness.
+ *
+ * Both wire versions are logged, at the length each one requires, matching
+ * workout_ctrl_on_frame(): an older data-field build sending v1 frames is a
+ * supported configuration, not a fault, and must not read as MALFORMED.
+ * CTRL_WKT_MAX_LEN (32) already covers v2's 20 bytes. */
 static void wkt_log(const uint8_t *d, uint16_t len)
 {
-    /* Bytes 0..8 are what decode_action() actually looks at: version,
-     * timerState, flags, intensity, targetType, targetLow, targetHigh. */
-    #define WKT_KEY_LEN   9
     #define WKT_LOG_EVERY 60          /* ~1 min at 1 Hz when nothing changes */
-    static uint8_t  s_last[WKT_KEY_LEN];
+    static uint8_t  s_last[WORKOUT_FRAME_LEN];
+    static uint16_t s_last_n;
     static uint32_t s_count, s_since;
-    static bool     s_seen;
+    static bool     s_seen, s_adv_logged;
 
     s_count++;
 
-    if (len < WORKOUT_FRAME_LEN || d[0] != WORKOUT_FRAME_VERSION) {
+    /* The version byte picks the required length, exactly as the decoder does. */
+    uint16_t need = 0;
+    if (len >= WORKOUT_FRAME_LEN_V1) {
+        if      (d[0] == 1)                     need = WORKOUT_FRAME_LEN_V1;
+        else if (d[0] == WORKOUT_FRAME_VERSION) need = WORKOUT_FRAME_LEN;
+    }
+    if (need == 0 || len < need) {
         /* workout_ctrl drops these silently — say so at least once. */
         if (!s_seen || ++s_since >= WKT_LOG_EVERY) {
             s_since = 0;
             s_seen  = true;
             NRF_LOG_WARNING("ctrl_svc: wkt #%u MALFORMED len=%u v=%u "
-                            "(want len>=%u v=%u)",
+                            "(want len>=%u for v1, >=%u for v%u)",
                             (unsigned int)s_count, (unsigned int)len,
                             (unsigned int)(len ? d[0] : 0),
+                            (unsigned int)WORKOUT_FRAME_LEN_V1,
                             (unsigned int)WORKOUT_FRAME_LEN,
                             (unsigned int)WORKOUT_FRAME_VERSION);
         }
         return;
     }
 
-    bool changed = !s_seen || memcmp(d, s_last, WKT_KEY_LEN) != 0;
+    /* Pre-roll announcement, checked on *every* frame and therefore before the
+     * change gate: the frames that walk remaining_s down to the advance differ
+     * only in the two bytes the gate ignores, so the gate would never show
+     * them. One line per step is enough to answer "did it fire, and when".
+     * s_adv_logged is cleared whenever the step itself changes, below. */
+    if (need == WORKOUT_FRAME_LEN) {
+        unsigned int rem = (unsigned int)(d[12] | (d[13] << 8));
+        unsigned int adv = (unsigned int)d[19];
+        if (!s_adv_logged && adv != 0 && (d[2] & WKT_FLAG_HAS_NEXT) && rem <= adv) {
+            s_adv_logged = true;
+            NRF_LOG_INFO("ctrl_svc: wkt ADV next=%u mm/s rem=%u adv=%u",
+                         (unsigned int)(d[17] | (d[18] << 8)), rem, adv);
+        }
+    }
+
+    bool changed = !s_seen || s_last_n != need || !wkt_key_same(d, s_last, need);
     if (!changed && ++s_since < WKT_LOG_EVERY) return;
 
-    memcpy(s_last, d, WKT_KEY_LEN);
-    s_since = 0;
-    s_seen  = true;
+    if (changed) s_adv_logged = false;   /* a new step gets its own ADV line */
+    memcpy(s_last, d, need);
+    s_last_n = need;
+    s_since  = 0;
+    s_seen   = true;
 
     unsigned int lo = (unsigned int)(d[5] | (d[6] << 8));
     unsigned int hi = (unsigned int)(d[7] | (d[8] << 8));
 
-    NRF_LOG_INFO("ctrl_svc: wkt #%u timer=%u flags=0x%02x intensity=%u",
-                 (unsigned int)s_count, (unsigned int)d[1],
-                 (unsigned int)d[2], (unsigned int)d[3]);
+    NRF_LOG_INFO("ctrl_svc: wkt #%u v%u timer=%u flags=0x%02x",
+                 (unsigned int)s_count, (unsigned int)d[0],
+                 (unsigned int)d[1], (unsigned int)d[2]);
     /* targetType 0 = speed; 0xFF = no structured step known. lo/hi are mm/s,
      * and the belt target is their midpoint. */
-    NRF_LOG_INFO("ctrl_svc: wkt tgtType=%u lo=%u hi=%u mm/s",
-                 (unsigned int)d[4], lo, hi);
+    NRF_LOG_INFO("ctrl_svc: wkt intensity=%u tgtType=%u lo=%u hi=%u mm/s",
+                 (unsigned int)d[3], (unsigned int)d[4], lo, hi);
+    /* The pre-roll inputs, so a frame that did NOT pre-roll can be diagnosed
+     * from the same line that shows one that did. rem 65535 = unknown,
+     * 65534 = "far" (the watch knows but is outside the window it sends in). */
+    if (need == WORKOUT_FRAME_LEN) {
+        NRF_LOG_INFO("ctrl_svc: wkt next=%u mm/s int=%u tgt=%u",
+                     (unsigned int)(d[17] | (d[18] << 8)),
+                     (unsigned int)d[15], (unsigned int)d[16]);
+        NRF_LOG_INFO("ctrl_svc: wkt rem=%u adv=%u dur=%u/%u",
+                     (unsigned int)(d[12] | (d[13] << 8)), (unsigned int)d[19],
+                     (unsigned int)d[9], (unsigned int)(d[10] | (d[11] << 8)));
+    }
 }
 
 static void on_write(const ble_gatts_evt_write_t *w)

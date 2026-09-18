@@ -106,9 +106,36 @@ def log(tag: str, msg: str) -> None:
     print(f"{ts}  {tag:<5} {msg}", flush=True)
 
 
-def _action_str(act: int) -> str:
+def _is_preroll(d: dict, speed_kmh: float) -> bool:
+    """Did this ACT_SPEED come from the frame's *next* slot rather than its
+    current one?
+
+    The decision itself is the firmware's, through libworkout_probe.so; this
+    only attributes the answer to a slot, so the log can say which step the
+    belt was just told to run. Two conditions, both read straight off the
+    decoded frame: the frame is inside the advance window, and the speed
+    commanded is not the one the current step asked for.
+
+    A next step that states its own speed is matched against it outright. A
+    rest step with an OPEN target states none — its walk speed is policy that
+    lives in core/workout_ctrl.c and is deliberately not mirrored here — so it
+    is attributed by elimination: inside the window, and not the current
+    step's speed.
+    """
+    if not wkt.in_advance_window(d):
+        return False
+    nxt = wkt.next_kmh(d)
+    if nxt is not None:
+        return abs(speed_kmh - nxt) <= 0.05
+    cur = wkt.cur_kmh(d)
+    return cur is None or abs(speed_kmh - cur) > 0.05
+
+
+def _action_str(act: int, d: dict) -> str:
     if act == 1:
-        return f"-> ACT_SPEED {probe.probe_last_speed():.1f} km/h"
+        speed = probe.probe_last_speed()
+        tag = " [pre-roll]" if _is_preroll(d, speed) else ""
+        return f"-> ACT_SPEED {speed:.1f} km/h{tag}"
     if act == 2:
         return "-> ACT_STOP"
     return "-> no change (deduplicated, or belt held)"
@@ -137,7 +164,7 @@ def on_write(characteristic, value: bytearray) -> None:
 
     with _probe_lock:
         act = probe.probe_feed(raw, len(raw))
-        detail = _action_str(act)
+        detail = _action_str(act, d)
 
     # One log() call, so every continuation line keeps the same indent.
     log("WKT", f"#{frame_no}  len={len(raw)} {wkt.format_frame(d)}\n"

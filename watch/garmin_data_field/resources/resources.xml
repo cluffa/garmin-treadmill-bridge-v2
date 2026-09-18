@@ -1,5 +1,7 @@
 <resources>
     <strings>
         <string id="AppName">FTMS Sync DataField</string>
+        <string id="AdvanceSecTitle">Speed advance (s)</string>
+        <string id="AdvanceUpOnlyTitle">Advance speed-ups only</string>
     </strings>
 </resources>
