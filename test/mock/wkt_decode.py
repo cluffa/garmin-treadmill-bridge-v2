@@ -1,17 +1,28 @@
-"""Decode the 15-byte workout telemetry frame the Garmin data field writes.
+"""Decode the workout telemetry frame the Garmin data field writes.
 
-Layout is authoritative in core/workout_ctrl.h:20-35 and mirrored in
+Two wire versions are live: v2 (20 bytes, the current one) and v1 (15 bytes,
+what an older data-field build still sends). The layout is authoritative in
+core/workout_ctrl.h and mirrored in
 watch/garmin_data_field/source/DataFieldView.mc. This module only *reads* the
 frame — it deliberately contains no belt-control policy. What the bridge would
 actually do with a frame comes from core/workout_ctrl.c through
 libworkout_probe.so, so there is exactly one implementation of that decision.
 
+A v1 frame decodes into the same dict shape as a v2 one, with the v2-only
+fields filled in with the values that mean "this frame says nothing about
+them": no next step, remaining unknown, advance 0. Callers therefore never
+have to branch on the version.
+
 No BLE imports: this is unit-testable without bless installed.
 """
 import struct
 
-FRAME_LEN = 15
-FRAME_VERSION = 1
+FRAME_LEN = 20
+FRAME_VERSION = 2
+
+# v1 is still accepted, by the firmware and therefore by this decoder.
+FRAME_LEN_V1 = 15
+FRAME_VERSION_V1 = 1
 
 # Only the enum values this repo actually pins down get names. Anything else
 # prints as a bare number rather than inventing a CIQ constant.
@@ -28,6 +39,20 @@ DURATION = {255: "unset"}
 # to a walk when the step carries no speed target (core/workout_ctrl.c).
 REST_INTENSITY = 1
 
+# WORKOUT_STEP_TARGET_SPEED — the only target type that maps to a belt speed.
+TARGET_SPEED = 0
+
+# Sentinels in the v2 remaining_s field (core/workout_ctrl.c). "unknown" means
+# the watch could not work it out; "far" means it knows but is deliberately not
+# spending a 1 Hz write stream saying so, because the boundary is outside the
+# window the bridge could act on.
+REMAIN_UNKNOWN = 0xFFFF
+REMAIN_FAR = 0xFFFE
+
+# flags bit5/bit6 (byte [2]), v2 only.
+FLAG_HAS_NEXT = 0x20
+FLAG_ADV_UP_ONLY = 0x40
+
 # Width of the timestamp + tag prefix that log() emits — "HH:MM:SS.mmm" (12) +
 # two spaces + a 5-wide tag + one space = 20 — so continuation lines sit under
 # the message column rather than 4 characters off it.
@@ -35,9 +60,9 @@ INDENT = " " * 20
 
 
 class Malformed(Exception):
-    """Frame the firmware would drop (silently): shorter than FRAME_LEN, or the
-    wrong version. A frame *longer* than FRAME_LEN is not malformed — see
-    decode()'s docstring.
+    """Frame the firmware would drop (silently): an unknown version, or shorter
+    than the length that version requires. A frame *longer* than that is not
+    malformed — see decode()'s docstring.
     """
 
 
@@ -47,22 +72,36 @@ def _name(table, v):
 
 
 def decode(buf: bytes) -> dict:
-    """Decode the leading FRAME_LEN bytes of `buf`.
+    """Decode the leading bytes of `buf` for whichever wire version it declares.
 
-    Matches core/workout_ctrl.c:76's `len < WORKOUT_FRAME_LEN` check: only a
-    frame *shorter* than FRAME_LEN is rejected. A longer frame is accepted and
-    decoded from its first FRAME_LEN bytes, exactly as workout_ctrl_on_frame()
-    would act on it — the trailing bytes are reported via "extra_bytes" for the
-    caller to log, not silently dropped, since decoding fewer frames than the
-    firmware would act on is itself a divergence worth catching.
+    Matches workout_ctrl_on_frame(): the version byte picks the required length
+    (15 for v1, 20 for v2) and only a frame *shorter* than that is rejected. A
+    longer frame is accepted and decoded from its first N bytes, exactly as the
+    firmware would act on it — the trailing bytes are reported via
+    "extra_bytes" for the caller to log, not silently dropped, since decoding
+    fewer frames than the firmware would act on is itself a divergence worth
+    catching.
+
+    v1 frames fill the v2-only fields with "says nothing": no next step,
+    remaining unknown, advance 0 — the values that make the pre-roll rule in
+    core/workout_ctrl.c a no-op, which is exactly v1 behaviour.
     """
-    if len(buf) < FRAME_LEN:
-        raise Malformed(f"len={len(buf)} (expected >= {FRAME_LEN})")
-    if buf[0] != FRAME_VERSION:
-        raise Malformed(f"ver={buf[0]} (expected {FRAME_VERSION})")
+    if len(buf) < FRAME_LEN_V1:
+        raise Malformed(f"len={len(buf)} (expected >= {FRAME_LEN_V1})")
+    ver = buf[0]
+    if ver == FRAME_VERSION_V1:
+        need = FRAME_LEN_V1
+    elif ver == FRAME_VERSION:
+        need = FRAME_LEN
+    else:
+        raise Malformed(
+            f"ver={ver} (expected {FRAME_VERSION_V1} or {FRAME_VERSION})")
+    if len(buf) < need:
+        raise Malformed(f"len={len(buf)} (expected >= {need} for v{ver})")
+
     lo, hi = struct.unpack_from("<HH", buf, 5)
-    return {
-        "version": buf[0],
+    d = {
+        "version": ver,
         "timer": buf[1],
         "flags": buf[2],
         "intensity": buf[3],
@@ -70,10 +109,31 @@ def decode(buf: bytes) -> dict:
         "lo_mmps": lo,
         "hi_mmps": hi,
         "dur_type": buf[9],
-        "dur_value": struct.unpack_from("<I", buf, 10)[0],
         "rep": buf[14],
-        "extra_bytes": len(buf) - FRAME_LEN,
+        "extra_bytes": len(buf) - need,
     }
+    if ver == FRAME_VERSION_V1:
+        d.update({
+            "dur_value": struct.unpack_from("<I", buf, 10)[0],
+            "remaining_s": REMAIN_UNKNOWN,
+            "next_intensity": 0xFF,
+            "next_target": 0xFF,
+            "next_mmps": 0,
+            "advance_s": 0,
+        })
+    else:
+        dur, remaining = struct.unpack_from("<HH", buf, 10)
+        d.update({
+            "dur_value": dur,
+            "remaining_s": remaining,
+            "next_intensity": buf[15],
+            "next_target": buf[16],
+            "next_mmps": struct.unpack_from("<H", buf, 17)[0],
+            "advance_s": buf[19],
+        })
+    d["has_next"] = bool(d["flags"] & FLAG_HAS_NEXT) and ver >= FRAME_VERSION
+    d["adv_up_only"] = bool(d["flags"] & FLAG_ADV_UP_ONLY) and ver >= FRAME_VERSION
+    return d
 
 
 def kmh(mmps: int) -> float:
@@ -81,8 +141,53 @@ def kmh(mmps: int) -> float:
     return mmps * 0.0036
 
 
+def _midpoint_mmps(lo: int, hi: int) -> int:
+    """resolve_speed()'s range arithmetic, and nothing else: a one-sided target
+    resolves to its populated side. Deliberately NOT the rest-step walk-speed
+    fallback — that is policy and lives in core/workout_ctrl.c."""
+    return (lo + hi) // 2 if (lo and hi) else (lo or hi)
+
+
+def cur_kmh(d: dict) -> float | None:
+    """The speed the *current* slot states outright, or None when it states
+    none (no step, a non-speed target, or a 0 mm/s range)."""
+    if not (d["flags"] & 0x01) or d["target"] != TARGET_SPEED:
+        return None
+    mmps = _midpoint_mmps(d["lo_mmps"], d["hi_mmps"])
+    return kmh(mmps) if mmps else None
+
+
+def next_kmh(d: dict) -> float | None:
+    """Same for the next slot. The watch has already reduced its range to a
+    midpoint, so there is nothing to average here."""
+    if not d["has_next"] or d["next_target"] != TARGET_SPEED:
+        return None
+    return kmh(d["next_mmps"]) if d["next_mmps"] else None
+
+
+def in_advance_window(d: dict) -> bool:
+    """True when the frame satisfies the *frame-shaped* part of the pre-roll
+    rule: a next step is present, the advance is on, and the remaining time is
+    a real number inside it. The guards that need policy (the short-step guard,
+    up-only, whether the next step resolves to a speed at all) stay in
+    core/workout_ctrl.c and reach the mock through libworkout_probe.so."""
+    return (d["advance_s"] > 0 and d["has_next"]
+            and d["remaining_s"] not in (REMAIN_UNKNOWN, REMAIN_FAR)
+            and d["remaining_s"] <= d["advance_s"])
+
+
+def remaining_str(d: dict) -> str:
+    r = d["remaining_s"]
+    if r == REMAIN_UNKNOWN:
+        return "unknown"
+    if r == REMAIN_FAR:
+        return "far"
+    return f"{r}s"
+
+
 def format_frame(d: dict) -> str:
-    """Two lines: state on the first, the step on the second."""
+    """Two lines for a v1 frame — state, then the step — plus a third for the
+    v2 next slot, so the pre-roll inputs are visible next to the decision."""
     head = (f"ver={d['version']} timer={_name(TIMER, d['timer'])} "
             f"flags=0x{d['flags']:02X} "
             f"intensity={_name(INTENSITY, d['intensity'])}")
@@ -91,7 +196,19 @@ def format_frame(d: dict) -> str:
             f"({kmh(d['lo_mmps']):.1f}-{kmh(d['hi_mmps']):.1f} km/h) "
             f"dur={_name(DURATION, d['dur_type'])} {d['dur_value']} "
             f"rep={d['rep']}")
-    return f"{head}\n{INDENT}{body}"
+    out = f"{head}\n{INDENT}{body}"
+    if d["version"] < FRAME_VERSION:
+        return out
+    if d["has_next"]:
+        nk = next_kmh(d)
+        nxt = (f"{d['next_mmps']} mm/s ({nk:.1f} km/h)" if nk is not None
+               else f"tgt={_name(TARGET, d['next_target'])} {d['next_mmps']} mm/s")
+        nxt += f" {_name(INTENSITY, d['next_intensity'])}"
+    else:
+        nxt = "none"
+    tail = (f"next={nxt} rem={remaining_str(d)} adv={d['advance_s']}s"
+            + (" up-only" if d["adv_up_only"] else ""))
+    return f"{out}\n{INDENT}{tail}"
 
 
 def annotate(d: dict) -> str:

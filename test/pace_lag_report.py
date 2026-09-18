@@ -82,6 +82,10 @@ REPO = Path(__file__).resolve().parent.parent
 DEFAULT_REST_KMH = 4.0
 #: two speeds within this are "the same target" (SPEED_EPS_KMH in workout_ctrl.c)
 SPEED_EPS_KMH = 0.05
+#: ADVANCE_MAX_S in workout_ctrl.c -- the bridge clamps the watch's advance_s,
+#: so asking this scorer to model more than that would model something the
+#: firmware cannot do.
+ADVANCE_MAX_S = 30
 
 
 def firmware_rest_kmh() -> float:
@@ -285,13 +289,35 @@ def load(path: Path) -> Run:
     return Run(name, t0, rec_t, rec_v, rec_d, steps, laps, timer_on, timer_off)
 
 
-def command_signal(run: Run, rest_kmh: float | None) -> tuple[Signal, list[dict]]:
+def command_signal(run: Run, rest_kmh: float | None, advance_s: float = 0.0,
+                   advance_up_only: bool = False) -> tuple[Signal, list[dict]]:
     """Reconstruct what the bridge was commanding, second by second.
 
     ACT_NONE latches: the belt holds the previous command, exactly as
     workout_ctrl_on_frame() does by returning early.
+
+    `advance_s` models the speed advance (core/workout_ctrl.c, wire format v2):
+    the bridge commands the next step's speed that many seconds *before* the
+    lap boundary, so the belt has finished ramping when the watch's step
+    starts. That makes the commanded signal lead the laps, which is the whole
+    point -- and why a trace recorded with the advance on must be scored with
+    it, or the scorer reports the lead as negative lag.
+
+    The rules mirror decode_action()'s guards, in the terms a .FIT states them:
+
+      * only a TIME step is pre-empted (the short-step guard only knows TIME
+        durations), and only if it is at least 2 x advance long -- measured
+        from the lap itself, which is what actually ran, rather than from the
+        step's nominal durationValue;
+      * only when the incoming target resolves to a speed at all;
+      * with `advance_up_only`, only when that speed is faster than what is
+        held, matching FLAG_ADV_UP_ONLY.
+
+    The first lap is never shifted (there is no previous step to eat into) and
+    a boundary is never dragged back past the previous one.
     """
     ts, vs, held = [], [], 0.0
+    prev = None
     for lap in run.laps:
         step = run.steps.get(lap["step_index"], {})
         # The lap's own intensity is authoritative for the portion that ran
@@ -300,10 +326,21 @@ def command_signal(run: Run, rest_kmh: float | None) -> tuple[Signal, list[dict]
         if lap.get("intensity") is not None:
             merged["intensity"] = lap["intensity"]
         kind, mps = decode_action(merged, rest_kmh)
+
+        t = lap["t_start"]
+        if advance_s > 0 and kind == "speed" and prev is not None:
+            prev_step = run.steps.get(prev["step_index"], {})
+            prev_len = prev["t_end"] - prev["t_start"]
+            if (prev_step.get("duration_type") == "time"
+                    and prev_len >= 2 * advance_s
+                    and not (advance_up_only and mps <= held)):
+                t = max(t - advance_s, ts[-1])
+
         if kind == "speed":
             held = mps
-        ts.append(lap["t_start"])
+        ts.append(t)
         vs.append(held)
+        prev = lap
     t_end = min(run.laps[-1]["t_end"], run.timer_off)
     return Signal(ts, vs, t_end), run.laps
 
@@ -337,6 +374,7 @@ class Report:
     file: str
     workout: str
     rest_policy: str
+    advance_s: float = 0.0
     duration_s: float = 0.0
     n_transitions: int = 0
     transitions: list[Transition] = field(default_factory=list)
@@ -504,8 +542,9 @@ def best_shift(act: Signal, cmd: Signal, t0: float, t1: float,
 
 def analyse(run: Run, rest_kmh: float | None, policy_name: str, path: Path,
             sdm_cycle_s: float | None = None,
-            cycle_source: str = "unknown") -> Report:
-    cmd, _ = command_signal(run, rest_kmh)
+            cycle_source: str = "unknown", advance_s: float = 0.0,
+            advance_up_only: bool = False) -> Report:
+    cmd, _ = command_signal(run, rest_kmh, advance_s, advance_up_only)
     act = actual_signal(run)
 
     t0 = max(cmd.ts[0], run.rec_t[0], run.timer_on)
@@ -565,7 +604,7 @@ def analyse(run: Run, rest_kmh: float | None, policy_name: str, path: Path,
 
     holes = [h for h in find_speed_holes(cmd, run) if t0 <= h["t"] <= t1]
 
-    rep = Report(str(path), run.name, policy_name)
+    rep = Report(str(path), run.name, policy_name, advance_s)
     rep.duration_s = t1 - t0
     rep.n_transitions = len(tr)
     rep.transitions = tr
@@ -785,6 +824,7 @@ def to_json(rep: Report) -> dict:
         "file": Path(rep.file).name,
         "workout": rep.workout,
         "rest_policy": rep.rest_policy,
+        "advance_s": rep.advance_s,
         "duration_s": rep.duration_s,
         "n_transitions": rep.n_transitions,
         "metrics": rep.metrics,
@@ -806,6 +846,12 @@ def compare(rep: Report, baseline: dict) -> bool:
     if baseline.get("rest_policy") != rep.rest_policy:
         print(f"  !! rest policy differs ({baseline.get('rest_policy')} -> "
               f"{rep.rest_policy}); the reference command timeline is not the same")
+    # A baseline written before --advance-s existed has no key at all, which is
+    # the same thing as 0.0: those runs were recorded without the pre-roll.
+    if float(baseline.get("advance_s") or 0.0) != rep.advance_s:
+        print(f"  !! speed advance differs ({baseline.get('advance_s') or 0.0} -> "
+              f"{rep.advance_s} s); the reference command timeline leads the "
+              "laps by a different amount")
     print(f"  {'metric':<28}{'baseline':>10}{'now':>10}{'delta':>10}   verdict")
     ok = True
     for key, (abs_tol, rel_tol) in tols.items():
@@ -836,15 +882,20 @@ def _synth_run(delay: float, dropout: tuple[float, float] | None = None,
     """A square wave between two speed targets, observed through a pure
     transport delay and a 1 Hz sampler -- i.e. exactly what the watch records.
 
+    A negative `delay` makes the trace *lead* the lap boundaries, which is what
+    a run recorded with the speed advance on looks like.
+
     mm/s values are chosen to survive the mm/s -> km/h -> m/s chain exactly
     (2500 -> 9.0 km/h -> 2.5 m/s, 3000 -> 10.8 -> 3.0), so any residual error
     the scorer reports is the scorer's, not float noise.
     """
     steps = {
         0: {"target_type": "speed", "custom_target_value_low": 2500,
-            "custom_target_value_high": 2500, "intensity": "active"},
+            "custom_target_value_high": 2500, "intensity": "active",
+            "duration_type": "time", "duration_value": lap_s * 1000},
         1: {"target_type": "speed", "custom_target_value_low": 3000,
-            "custom_target_value_high": 3000, "intensity": "active"},
+            "custom_target_value_high": 3000, "intensity": "active",
+            "duration_type": "time", "duration_value": lap_s * 1000},
     }
     laps = [{"t_start": i * lap_s, "t_end": (i + 1) * lap_s,
              "step_index": i % 2, "intensity": "active"} for i in range(n_laps)]
@@ -855,7 +906,9 @@ def _synth_run(delay: float, dropout: tuple[float, float] | None = None,
     rec_t, rec_v, rec_d, dist = [], [], [], 0.0
     for k in range(int(total)):
         t = float(k)
-        v = truth.at(max(0.0, t - delay))
+        # Clamped at both ends so a negative delay (a leading trace) holds the
+        # final value instead of falling off the end into a fake dropout.
+        v = truth.at(min(truth.t_end, max(0.0, t - delay)))
         v = 0.0 if v is None else v * gain
         dist += v
         if dropout and dropout[0] <= t < dropout[0] + dropout[1]:
@@ -951,6 +1004,35 @@ def self_test() -> int:
     if not ok:
         fails.append("rest policy")
 
+    # The speed advance makes the *command* lead the lap boundaries, so a trace
+    # recorded with it on leads too. Scored with --advance-s 0 that lead is
+    # indistinguishable from area between the curves and reads as 5 s of lag;
+    # told about the advance, the reference command moves with it and the run
+    # scores clean. Both halves matter: the second is the gate for an
+    # advance-enabled trace, the first is why passing ADVANCE= is not optional.
+    print("\nspeed advance: a trace that leads the laps by 5 s")
+    lead = _synth_run(-5.0)
+    m = analyse(lead, None, "hold", Path("<synthetic>")).metrics
+    check("effective_lag_s (advance not modelled)", m["effective_lag_s"], 5.0, 0.02)
+    m = analyse(lead, None, "hold", Path("<synthetic>"), advance_s=5.0).metrics
+    check("effective_lag_s (advance 5 modelled)", m["effective_lag_s"], 0.0, 0.02)
+    check("edge_lag_mean_s (advance 5)", m["edge_lag_mean_s"], 0.0, 0.02)
+    check("iae_m (advance 5)", m["iae_m"], 0.0, 0.02)
+
+    # The short-step guard: with a 6 s advance the 10 s laps are under
+    # 2 x advance, so nothing is pre-rolled and the scorer must model the
+    # commands landing on the boundaries, exactly as the firmware does.
+    m = analyse(lead, None, "hold", Path("<synthetic>"), advance_s=6.0).metrics
+    check("short-step guard blocks pre-roll", m["effective_lag_s"], 5.0, 0.02)
+
+    # up-only: only the increases lead, so half the transitions still sit 5 s
+    # off and the headline lands halfway. 10 upward transitions score 0 and 9
+    # downward ones score 5 s, weighted by an identical step size.
+    m = analyse(lead, None, "hold", Path("<synthetic>"), advance_s=5.0,
+                advance_up_only=True).metrics
+    check("up-only leads the increases only", m["effective_lag_s"],
+          9 * 5.0 / 19, 0.02)
+
     print(f"\nself-test: {'PASS' if not fails else 'FAIL ' + ', '.join(fails)}")
     return 0 if not fails else 1
 
@@ -975,6 +1057,17 @@ def main() -> int:
                     help="write this run as the reference for future comparisons")
     ap.add_argument("--baseline", type=Path,
                     help="compare against a stored baseline; non-zero exit on regression")
+    ap.add_argument("--advance-s", type=float, default=0.0,
+                    help="seconds of speed advance the RECORDING firmware was "
+                         "running (core/workout_ctrl.c, wire format v2). A "
+                         "property of the trace like --sdm-cycle-s, not a "
+                         "knob: with the advance on, the bridge commands each "
+                         "step early, so scoring such a trace with the default "
+                         "0 reports the lead as negative lag. Default 0 -- the "
+                         "archived baselines were recorded without it.")
+    ap.add_argument("--advance-up-only", action="store_true",
+                    help="the recording firmware had FLAG_ADV_UP_ONLY set, so "
+                         "only speed *increases* were pre-rolled")
     ap.add_argument("--sdm-cycle-s", type=float, default=None,
                     help="length of the ANT SDM page-rotation cycle, for the "
                          "hole-periodicity check. Defaults to whatever "
@@ -990,6 +1083,9 @@ def main() -> int:
         return self_test()
     if args.fit is None:
         ap.error("a .FIT file is required (or use --self-test)")
+    if not 0 <= args.advance_s <= ADVANCE_MAX_S:
+        ap.error(f"--advance-s must be 0..{ADVANCE_MAX_S} "
+                 "(the bridge clamps it to ADVANCE_MAX_S)")
     if not args.fit.exists():
         return print(f"no such file: {args.fit}", file=sys.stderr) or 2
 
@@ -1002,7 +1098,8 @@ def main() -> int:
 
     candidates = {"walk": rest_kmh, "hold": None}
     if args.rest_policy == "auto":
-        scored = {name: analyse(run, kmh, name, args.fit, cycle_s, cycle_src)
+        scored = {name: analyse(run, kmh, name, args.fit, cycle_s, cycle_src,
+                                args.advance_s, args.advance_up_only)
                   for name, kmh in candidates.items()}
         policy = min(scored, key=lambda k: scored[k].metrics["iae_m"])
         rep = scored[policy]
@@ -1013,9 +1110,14 @@ def main() -> int:
               f"); the {other!r} model fits {ratio:.1f}x worse")
     else:
         policy = args.rest_policy
-        rep = analyse(run, candidates[policy], policy, args.fit, cycle_s, cycle_src)
+        rep = analyse(run, candidates[policy], policy, args.fit, cycle_s,
+                      cycle_src, args.advance_s, args.advance_up_only)
 
-    cmd, _ = command_signal(run, candidates[policy])
+    if args.advance_s:
+        print(f"speed advance: modelling a {args.advance_s:g} s pre-roll"
+              + (" (increases only)" if args.advance_up_only else ""))
+    cmd, _ = command_signal(run, candidates[policy], args.advance_s,
+                            args.advance_up_only)
     if not args.quiet:
         print_report(rep, run, cmd, args.verbose)
 
