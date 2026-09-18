@@ -393,3 +393,56 @@ Files: `firmware/ble_ctrl_svc.c` (logging only), `CLAUDE.md` contract line
   stamp confirmed, results added to `docs/pace-lag-analysis.md`.
 - `CLAUDE.md` control contract and `watch/README.md` wire-format sections
   updated to v2.
+
+---
+
+## Implementation notes (Phases 1–4 landed; 0 and 5 outstanding)
+
+Phases 1–4 are implemented. **Phase 0 and Phase 5 are not**: neither the
+Connect IQ simulator/SDK nor the nRF5 toolchain nor the hardware was available,
+so the watch (`.mc`) and firmware (`ble_ctrl_svc.c`) changes are **written but
+never compiled**, and no measurement exists.
+
+Phase 0's two open questions were therefore taken as *stated assumptions*,
+each a one-line change to flip, and both are written up in `watch/README.md`:
+
+- `WorkoutStep.durationValue` is assumed **seconds** for TIME and **metres**
+  for DISTANCE, behind `DUR_TIME_DIV` / `DUR_DIST_DIV` in `DataFieldView.mc`.
+- `Activity.getNextWorkoutStep()` is assumed to return the next *portion* to
+  run — the rest portion while the work portion is running. If it returns the
+  next repetition's work step instead, the rest never pre-rolls and this plan's
+  Phase 0 fallback is needed.
+
+Where the implementation departs from the plan above, and why:
+
+- **Frame-contract check.** The watch's `(FRAME_VERSION, FRAME_LEN)` is checked
+  for membership in the set of versions the bridge accepts, not for equality
+  with the newest. A v1 watch build driving new firmware is a supported
+  configuration — it is the whole reason v1 is still accepted — so requiring
+  equality would fail the gate on a configuration the compatibility table above
+  calls "works as today". `workout_ctrl.h` and `wkt_decode.py` are still
+  compared for exact equality: they are two sides of one decision.
+- **`durationType`/`durationValue` moved ahead of the target-type gate in
+  `_packFrame`.** v1 packed them only on speed steps, so a rest step — which
+  arrives with an OPEN target — carried no duration at all and could never
+  produce a `remaining_s`. Easing down into the rest is half the point of the
+  advance, so the duration is now packed for every step shape.
+- **`_packNext()` has its own try/catch**, nested rather than sharing the
+  current step's. Same degradation ("no next step"), but a throw while reading
+  the next step cannot cost the current step's target, which is the main
+  product path.
+- **The display has a sixth case**, `NEXT --`, for a next step that exists but
+  resolves to no usable speed (an active step with an HR or open target). The
+  bridge pre-rolls nothing there and the belt holds, which is worth showing
+  rather than rendering as a blank row.
+- **The pace scorer measures "at least 2 × advance long" from the lap**, not
+  from the step's nominal `duration_value`: the lap is what actually ran, and
+  it avoids depending on the FIT field's units. The `duration_type == "time"`
+  gate is still the step's.
+- **`ADVANCE_UP_ONLY=1`** was added to the Makefile beside `ADVANCE=`, since a
+  trace recorded with `FLAG_ADV_UP_ONLY` set needs both to score correctly.
+
+Still to do, in order: Phase 0 on the simulator/watch against
+`make mock-bridge` (confirm the two assumptions, and that the log shows `far`
+mid-step, a countdown at the end, and a `[pre-roll]` prediction), `make
+ciq-build` + `make firmware` to prove both sides compile, then Phase 5.
