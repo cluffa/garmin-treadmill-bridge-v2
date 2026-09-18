@@ -1,0 +1,13 @@
+<properties>
+    <!-- Seconds before a workout step boundary at which the bridge commands
+         the NEXT step's speed, so the belt has finished ramping when the
+         watch's step starts. 0 turns the feature off and the belt is
+         commanded at the boundary, exactly as wire format v1 did.
+         core/workout_ctrl.c clamps this again at ADVANCE_MAX_S. -->
+    <property id="advanceSec" type="number">5</property>
+    <!-- Pre-roll speed *increases* only. The default eases down early too, so
+         the belt's actual profile lines up with the watch's step timer in both
+         directions; this is the opt-out for runners who would rather have the
+         whole work interval at work pace and let the rest start late. -->
+    <property id="advanceUpOnly" type="boolean">false</property>
+</properties>

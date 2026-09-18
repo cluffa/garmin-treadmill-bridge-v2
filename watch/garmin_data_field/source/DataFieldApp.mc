@@ -33,4 +33,13 @@ class DataFieldApp extends Application.AppBase {
         mView = new DataFieldView(mBle);
         return [ mView ];
     }
+
+    // The Connect IQ phone app can change advanceSec/advanceUpOnly mid-activity.
+    // Re-read them into the view rather than restarting anything: they go into
+    // every frame, so the change gate sends the new values by itself.
+    function onSettingsChanged() as Void {
+        if (mView != null) {
+            mView.loadSettings();
+        }
+    }
 }

@@ -1,0 +1,8 @@
+<settings>
+    <setting propertyKey="@Properties.advanceSec" title="@Strings.AdvanceSecTitle">
+        <settingConfig type="numeric" min="0" max="30" />
+    </setting>
+    <setting propertyKey="@Properties.advanceUpOnly" title="@Strings.AdvanceUpOnlyTitle">
+        <settingConfig type="boolean" />
+    </setting>
+</settings>
