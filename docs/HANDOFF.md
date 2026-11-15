@@ -750,7 +750,8 @@ concurrency gate remains, per `docs/finishing-plan.md`.
   ⚠ **Power the real bridge off** before running the mock, or the field will
   pair with whichever it finds first and you will debug the wrong peer.
 - **Firmware:** PlatformIO's GCC **7.2.1** (not Homebrew's), nRF5 SDK 17.1.0,
-  S340 v7.0.1 API headers. Concrete paths in `CLAUDE.md`.
+  S340 v7.0.1 API headers. Bootloader: Arm GCC 10.3-2021.10 via `make bootloader`.
+  From-scratch install of all of it: `docs/setup.md`; check with `make doctor`.
 - **Flashing:** no onboard debugger — SWD via a Pico/CMSIS-DAP + `pyocd` (not
   `nrfjprog`), USB via `nrfutil`.
 - **Watch:** Connect IQ SDK for rebuilding `watch/`; sideload the `.prg` over

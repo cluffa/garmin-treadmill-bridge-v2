@@ -17,8 +17,13 @@ that has the matching **public key** compiled in. The bootloader is flashed once
 over SWD alongside the SoftDevice (see `docs/flashing.md` §4 for the
 `make flash-full` procedure, which does this in one chip-erase pass).
 
-If you compiled the bootloader yourself, ensure `dfu_public_key.c` (the one in
-this directory) was included in the build.
+Build the bootloader hex with `make bootloader` (repo root). It is the stock
+SDK `pca10056_usb` project with `dfu_public_key.c` from this directory compiled
+in, built with Arm GCC 10.3-2021.10 — see `docs/setup.md` §5. If you generate
+a **new** key pair, existing boards reject packages signed with it until the
+bootloader is rebuilt and reflashed over SWD (`make bootloader flash-full`).
+Back up `dfu_private_key.pem` somewhere private: it is the only thing that lets
+a provisioned board be updated over USB.
 
 ## Key management
 

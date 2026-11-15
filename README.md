@@ -40,7 +40,7 @@ BLE central, ANT master).
 |----------------|---------|
 | `core/`        | Proven, host-tested protocol code (belt control policy, frame parsing, FSM). No nRF/SDK/BLE dependencies -- compiles for the host. |
 | `firmware/`    | nRF52840 / S340 radio glue: BLE GATT server (peripheral), BLE central (FTMS/iFit), ANT master (SDM footpod), USB-CDC console. |
-| `test/host/`   | 9 C unit-test suites for `core/` (the green gate -- must pass before every commit). |
+| `test/host/`   | 13 C unit-test suites for `core/` (the green gate -- must pass before every commit). |
 | `test/mock/`   | Python BLE mocks that let you test the device against a fake watch (`mock_watch.py`) and a fake treadmill (`mock_treadmill.py`) without hardware -- plus `mock_bridge.py`, which runs the *other* direction: a macOS peripheral that impersonates the bridge itself, so `watch/garmin_data_field` can be debugged with no nRF52840 in the loop at all (`make mock-bridge`; see `watch/README.md`). |
 | `test/renode/` | Bounded Renode non-radio smoke test (ELF loads, CPU starts). The S340 radio cannot run under Renode -- this is a smoke test, not a gate. |
 | `dfu/`         | DFU key management and documentation (see `dfu/README.md`). |
@@ -48,7 +48,9 @@ BLE central, ANT master).
 
 ## Build and flash
 
-See `CLAUDE.md` for the canonical environment variables and toolchain setup.
+**New machine? Start with [`docs/setup.md`](docs/setup.md)** — every toolchain,
+SDK, SoftDevice, key and tool with exact versions, download sources and
+checksums — then run `make doctor` to confirm everything is in place.
 
 ### Host unit tests (no hardware)
 
@@ -56,8 +58,8 @@ See `CLAUDE.md` for the canonical environment variables and toolchain setup.
 make host-test
 ```
 
-Expect 9 `core/` suites plus 3 mock suites (`test_workout_probe`,
-`test_wkt_decode`, `test_link_state`), all OK.
+Expect 13 `core/` suites plus 4 mock suites (`test_workout_probe`,
+`test_wkt_decode`, `test_link_state`, `test_script_header`), all OK.
 
 ### First build on a new machine
 
@@ -83,7 +85,8 @@ cp firmware/ant_license.mk.example   firmware/ant_license.mk
   `sd_ant_enable()` fails at runtime.
 
 Signing DFU packages additionally requires `dfu/dfu_private_key.pem`
-(see `dfu/README.md`).
+(see `dfu/README.md`). First-time provisioning also needs the bootloader hex,
+built reproducibly by `make bootloader` (`docs/setup.md` §5).
 
 ### Firmware build
 
@@ -96,8 +99,8 @@ make -C firmware -j8 \
 ```
 
 **Toolchain note:** You MUST use PlatformIO's GCC 7.2.1 (the SDK is not
-compatible with Homebrew's `arm-none-eabi-gcc` 16). See `CLAUDE.md` for the
-canonical variable values and this machine's concrete paths.
+compatible with Homebrew's `arm-none-eabi-gcc` 16). Install commands:
+`docs/setup.md` §3.
 
 Or use the top-level convenience target (forwards `?=` defaults for all four
 variables — override with e.g. `make SDK_ROOT=/elsewhere firmware`):
@@ -141,8 +144,8 @@ Build first, then flash.
 
 ## Testing layers
 
-1. **Host unit tests** (green gate). `make host-test` -- 9 `core/` suites plus
-   3 mock suites (12 total), must pass before every commit.
+1. **Host unit tests** (green gate). `make host-test` -- 13 `core/` suites plus
+   4 mock suites (17 total), must pass before every commit.
 2. **Host BLE mocks** (functional integration). Run `mock_treadmill.py` (fake
    treadmill, FTMS peripheral) and `mock_watch.py` (fake Garmin watch/central)
    via `uv run`, then exercise the bridge against them. No hardware needed.

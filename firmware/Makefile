@@ -25,9 +25,11 @@ PROJECT_NAME     := garmin_ant_bridge
 TARGETS          := nrf52840_xxaa
 OUTPUT_DIRECTORY := _build
 
+# External, uncommittable dependencies — how to obtain each: ../docs/setup.md.
 SDK_ROOT  ?= $(HOME)/nRF5_SDK_17.1.0_ddde560
-S340_API  ?= /Users/alex/workspace/nrf52/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.API/include
-S340_HEX  ?= /Users/alex/workspace/nrf52/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.hex
+NRF_DEPS  ?= $(HOME)/workspace/nrf52
+S340_API  ?= $(NRF_DEPS)/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.API/include
+S340_HEX  ?= $(NRF_DEPS)/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.hex
 
 FW_DIR   := .
 CORE_DIR := ../core
@@ -348,7 +350,8 @@ help:
 PYOCD          ?= pyocd
 PYOCD_TARGET   ?= nrf52840
 NRFUTIL        ?= nrfutil
-BOOTLOADER_HEX ?= /Users/alex/workspace/nrf52/build/bootloader_usb_s340.hex
+# Built by `make bootloader` at the repo root (tools/build_bootloader.sh).
+BOOTLOADER_HEX ?= $(NRF_DEPS)/build/bootloader_usb_s340.hex
 
 DFU_KEY      ?= ../dfu/dfu_private_key.pem
 DFU_ZIP      := $(OUTPUT_DIRECTORY)/app_dfu.zip
