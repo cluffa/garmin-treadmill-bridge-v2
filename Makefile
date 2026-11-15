@@ -8,20 +8,28 @@
 
 .PHONY: host-test firmware dfu settings flash-dfu flash-full flash-sd flash-app \
         dfu-enter reset clean help mock-bridge mock-test sideload usb-kick \
-        pace-test pace-report pace-baseline ciq-build
+        pace-test pace-report pace-baseline ciq-build doctor bootloader
 
-GNU_INSTALL_ROOT ?= /Users/alex/.platformio/packages/toolchain-gccarmnoneeabi/bin/
+# Where every external dependency lives on a fresh machine: docs/setup.md.
+# NRF_DEPS is the folder holding the licensed S340 download and the built
+# bootloader hex (neither can be committed).
+GNU_INSTALL_ROOT ?= $(HOME)/.platformio/packages/toolchain-gccarmnoneeabi/bin/
 GNU_VERSION      ?= 7.2.1
 SDK_ROOT         ?= $(HOME)/nRF5_SDK_17.1.0_ddde560
-S340_API         ?= $(HOME)/workspace/nrf52/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.API/include
+NRF_DEPS         ?= $(HOME)/workspace/nrf52
+S340_API         ?= $(NRF_DEPS)/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.API/include
 
 FW_MAKE_ARGS = \
   GNU_INSTALL_ROOT=$(GNU_INSTALL_ROOT) \
   GNU_VERSION=$(GNU_VERSION) \
   SDK_ROOT=$(SDK_ROOT) \
+  NRF_DEPS=$(NRF_DEPS) \
   S340_API=$(S340_API)
 
 help:
+	@echo "Setup (new machine — see docs/setup.md):"
+	@echo "  make doctor                 check every toolchain/SDK/key the build chain needs"
+	@echo "  make bootloader             build the USB-DFU bootloader hex (needs GCC 10.3)"
 	@echo "Build:"
 	@echo "  make host-test              core/ unit tests (no toolchain needed)"
 	@echo "  make check-uuid             assert firmware/mock/watch agree on the A6ED UUID"
@@ -44,8 +52,18 @@ help:
 	@echo "  make flash-dfu SERIAL=/dev/cu.usbmodemXXXX   push a package over USB"
 	@echo "  make reset                  reset the target"
 	@echo ""
-	@echo "First build on a new machine: copy firmware/ant_network_key.h.example"
-	@echo "and firmware/ant_license.mk.example (see README)."
+	@echo "First build on a new machine: docs/setup.md, then make doctor."
+
+# Report which parts of the build chain are installed (docs/setup.md).
+doctor:
+	@GNU_INSTALL_ROOT="$(GNU_INSTALL_ROOT)" SDK_ROOT="$(SDK_ROOT)" NRF_DEPS="$(NRF_DEPS)" \
+	  S340_API="$(S340_API)" CIQ_SDK="$(CIQ_SDK)" CIQ_KEY="$(CIQ_KEY)" tools/check_env.sh
+
+# Stock SDK pca10056_usb bootloader + this repo's dfu/dfu_public_key.c, built
+# with Arm GCC 10.3-2021.10. Reproduces the provisioned hex byte-for-byte.
+# Output: $(NRF_DEPS)/build/bootloader_usb_s340.hex (what flash-full writes).
+bootloader:
+	@SDK_ROOT="$(SDK_ROOT)" NRF_DEPS="$(NRF_DEPS)" tools/build_bootloader.sh
 
 host-test: check-uuid
 	$(MAKE) -C test/host

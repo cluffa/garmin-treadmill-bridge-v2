@@ -62,7 +62,10 @@ completes with a warning only). Signing DFU packages additionally needs
 
 ## Toolchain
 
-Paths below are this machine's concrete values — adjust to your own setup.
+**From-scratch setup (versions, downloads, checksums): `docs/setup.md`.** Run
+`make doctor` to check every dependency. Paths below are this machine's concrete
+values; the Makefiles default to the same locations via `$(HOME)` and
+`NRF_DEPS ?= $(HOME)/workspace/nrf52`.
 
 - **Host C compiler:** cc/gcc/clang (for `core/` + `test/host/`).
 - **Firmware ARM toolchain:** PlatformIO's GCC 7.2.1 (SDK-compatible), NOT Homebrew's 16.1.0:
@@ -70,7 +73,11 @@ Paths below are this machine's concrete values — adjust to your own setup.
 - **nRF5 SDK 17.1.0:** `SDK_ROOT=/Users/alex/nRF5_SDK_17.1.0_ddde560`
 - **S340 v7.0.1 API headers:** `S340_API=/Users/alex/workspace/nrf52/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.API/include`
 - **S340 hex:** `/Users/alex/workspace/nrf52/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.hex` (S340 is NOT in the SDK's softdevice dir)
-- **Bootloader hex:** `/Users/alex/workspace/nrf52/build/bootloader_usb_s340.hex`
+- **Bootloader hex:** `/Users/alex/workspace/nrf52/build/bootloader_usb_s340.hex` — built by
+  `make bootloader` (stock SDK `pca10056_usb` + `dfu/dfu_public_key.c`, Arm GCC
+  **10.3-2021.10** at `~/gcc-arm-none-eabi-10.3-2021.10`, NOT the firmware's 7.2.1).
+  Verified 2026-11-15 to reproduce the provisioned hex byte-for-byte. Keep the SDK
+  itself pristine: the script installs the public key into it.
 
 ## `core/` purity invariant
 

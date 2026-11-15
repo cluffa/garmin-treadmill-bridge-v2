@@ -8,6 +8,7 @@ the **Nordic Secure USB-DFU bootloader** with `nrfutil`.
 
 - Build command with all required toolchain flags: see §4a below.
 - Tools used here: `pyocd`, `nrfutil` (Rust plugin build, `nrf5sdk-tools`), installed at `~/.local/bin`.
+  Install steps: `docs/setup.md` §7.
 
 ---
 
@@ -55,10 +56,11 @@ pyocd list          # should show a CMSIS-DAP probe (Raspberry Pi - Debugprobe)
 
 ## 3. Paths used below
 
-External artifacts live outside this repo:
+External artifacts live outside this repo (how to obtain or build each one:
+`docs/setup.md` §4–§5; `make doctor` checks they exist):
 ```sh
 S340_HEX=/path/to/ANT_s340_nrf52_7.0.1/ANT_s340_nrf52_7.0.1.hex
-BOOTLOADER_HEX=/path/to/bootloader_usb_s340.hex
+BOOTLOADER_HEX=/path/to/bootloader_usb_s340.hex   # make bootloader
 ```
 In-repo build outputs (after a `make` build):
 ```sh
